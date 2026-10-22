@@ -5,3 +5,7 @@ dist/
 !.env.example
 .DS_Store
 *.local
+.netlify/
+coverage/
+*.tsbuildinfo
+pnpm-debug.log*

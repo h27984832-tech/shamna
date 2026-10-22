@@ -1,88 +1,149 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import type { Product } from './lib/models'
+import { demoProducts, loadCatalog, loadCategories, loadCities } from './lib/catalog'
+import { isSupabaseConfigured } from './lib/supabase'
+import { useAuth } from './hooks/useAuth'
+import { AccountCenter } from './components/AccountCenter'
+import { AuthDialog } from './components/AuthDialog'
+import { CheckoutDialog } from './components/CheckoutDialog'
+import { filterCatalog, summarizeCart } from './lib/marketplace'
 
-type Product = {
-  id: number
-  name: string
-  category: string
-  price: number
-  area: string
-  store: string
-  emoji: string
-  color: string
-  note: string
-}
-
-const products: Product[] = [
-  { id: 1, name: 'صابون غار طبيعي', category: 'عناية', price: 35000, area: 'جرمانا', store: 'بيت الصابون', emoji: '🧼', color: 'sage', note: 'صناعة محلية' },
-  { id: 2, name: 'طقم فناجين قهوة', category: 'منزل', price: 85000, area: 'قطنا', store: 'دار الحرف', emoji: '☕', color: 'clay', note: 'قطعة حرفية' },
-  { id: 3, name: 'مربى المشمش البيتي', category: 'مونة', price: 42000, area: 'جرمانا', store: 'مونة ستّي', emoji: '🍑', color: 'peach', note: 'دفعة صغيرة' },
-  { id: 4, name: 'وشاح قطني مطرّز', category: 'أزياء', price: 120000, area: 'قطنا', store: 'خيط وحكاية', emoji: '🧣', color: 'rose', note: 'تطريز يدوي' },
-  { id: 5, name: 'خلطة زعتر بلدي', category: 'مونة', price: 28000, area: 'قطنا', store: 'مونة ستّي', emoji: '🌿', color: 'herb', note: 'مكونات محلية' },
-  { id: 6, name: 'شمعة برائحة الياسمين', category: 'منزل', price: 55000, area: 'جرمانا', store: 'ضو الشام', emoji: '🕯️', color: 'cream', note: 'صنع يدوي' },
-  { id: 7, name: 'حقيبة قماش يومية', category: 'أزياء', price: 68000, area: 'جرمانا', store: 'خيط وحكاية', emoji: '👜', color: 'lilac', note: 'قماش متين' },
-  { id: 8, name: 'زيت زيتون بلدي', category: 'مونة', price: 95000, area: 'قطنا', store: 'خيرات الدار', emoji: '🫒', color: 'olive', note: 'عبوة تجريبية' },
-]
-
-const categories = [
-  { name: 'الكل', icon: '✳' }, { name: 'مونة', icon: '🍯' }, { name: 'منزل', icon: '🏺' },
-  { name: 'أزياء', icon: '🧵' }, { name: 'عناية', icon: '🌱' },
-]
-
+const categoryIcons: Record<string, string> = { 'الكل': '✳', 'مونة': '🍯', 'منزل': '🏺', 'أزياء': '🧵', 'عناية': '🌱' }
 const formatPrice = (price: number) => new Intl.NumberFormat('ar-SY').format(price)
 
 function App() {
+  const { session, roles } = useAuth()
+  const [products, setProducts] = useState<Product[]>(isSupabaseConfigured ? [] : demoProducts)
+  const [categoryNames, setCategoryNames] = useState(['مونة', 'منزل', 'أزياء', 'عناية'])
+  const [cityNames, setCityNames] = useState(['قطنا', 'جرمانا'])
+  const [catalogLoading, setCatalogLoading] = useState(isSupabaseConfigured)
+  const [catalogError, setCatalogError] = useState('')
   const [category, setCategory] = useState('الكل')
   const [area, setArea] = useState('كل المناطق')
+  const [storeFocus, setStoreFocus] = useState('')
   const [query, setQuery] = useState('')
-  const [cart, setCart] = useState<number[]>([])
+  const [cart, setCart] = useState<string[]>(() => {
+    try {
+      const saved: unknown = JSON.parse(localStorage.getItem('shamna-cart') ?? '[]')
+      return Array.isArray(saved) && saved.every((item) => typeof item === 'string') ? saved : []
+    } catch { return [] }
+  })
   const [cartOpen, setCartOpen] = useState(false)
+  const [accountOpen, setAccountOpen] = useState(false)
+  const [authOpen, setAuthOpen] = useState(false)
+  const [checkoutOpen, setCheckoutOpen] = useState(false)
+  const [selectedProduct, setSelectedProduct] = useState<Product | null>(null)
   const [notice, setNotice] = useState('')
 
-  const visibleProducts = useMemo(() => products.filter((product) => {
-    const matchesCategory = category === 'الكل' || product.category === category
-    const matchesArea = area === 'كل المناطق' || product.area === area
-    const matchesQuery = `${product.name} ${product.store} ${product.category}`.includes(query.trim())
-    return matchesCategory && matchesArea && matchesQuery
-  }), [area, category, query])
+  useEffect(() => { localStorage.setItem('shamna-cart', JSON.stringify(cart)) }, [cart])
 
-  const addToCart = (id: number) => {
-    setCart((items) => [...items, id])
-    setNotice('انضاف المنتج لسلتك')
-    window.setTimeout(() => setNotice(''), 2200)
+  useEffect(() => {
+    let active = true
+    void Promise.all([loadCatalog(), loadCategories(), loadCities()])
+      .then(([loadedProducts, loadedCategories, loadedCities]) => {
+        if (!active) return
+        setProducts(loadedProducts)
+        setCategoryNames(loadedCategories)
+        setCityNames(loadedCities)
+        setCatalogError('')
+      })
+      .catch((cause: unknown) => {
+        if (active) setCatalogError(cause instanceof Error ? cause.message : 'تعذر تحميل المنتجات.')
+      })
+      .finally(() => { if (active) setCatalogLoading(false) })
+    return () => { active = false }
+  }, [])
+
+  const categories = useMemo(() => [
+    { name: 'الكل', icon: categoryIcons['الكل'] },
+    ...categoryNames.map((name) => ({ name, icon: categoryIcons[name] ?? '✳' })),
+  ], [categoryNames])
+
+  const visibleProducts = useMemo(() => filterCatalog(products, {
+    category, area, storeId: storeFocus, query,
+  }), [area, category, products, query, storeFocus])
+
+  const cartProducts = cart.map((id) => products.find((product) => product.id === id)).filter((item): item is Product => Boolean(item))
+  const { subtotal: total } = summarizeCart(cartProducts)
+
+  const notify = (message: string) => {
+    setNotice(message)
+    window.setTimeout(() => setNotice(''), 2600)
   }
 
-  const cartProducts = cart.map((id) => products.find((product) => product.id === id)!).filter(Boolean)
-  const total = cartProducts.reduce((sum, product) => sum + product.price, 0)
+  const addToCart = (product: Product) => {
+    setCart((items) => [...items, product.id])
+    notify(product.isDemo ? 'انضاف المنتج إلى السلة التجريبية' : 'انضاف المنتج لسلتك')
+  }
+
+  const categoryReset = () => { setCategory('الكل'); setArea('كل المناطق'); setQuery(''); setStoreFocus('') }
 
   return (
     <>
-      <div className="announcement">سوق محلي من ناسنا · توصيل تجريبي في قطنا وجرمانا</div>
+      <div className="announcement">{isSupabaseConfigured ? 'سوق محلي من ناسنا · التوصيل حسب المناطق التي يحددها المتجر' : 'معاينة شامنا · المنتجات والأسعار أمثلة شكلية لا يمكن شراؤها'}</div>
       <header className="site-header">
         <a className="brand" href="#home" aria-label="شامنا الرئيسية"><span className="brand-mark">ش</span><span><b>شامنا</b><small>سوقنا أقرب</small></span></a>
         <label className="search"><span aria-hidden="true">⌕</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="شو عم تدوّر اليوم؟" aria-label="ابحث عن المنتجات" /><kbd>بحث</kbd></label>
-        <div className="header-actions"><button className="location" onClick={() => document.getElementById('area-filter')?.focus()}><span>⌖</span><span><small>منطقتك</small><b>{area === 'كل المناطق' ? 'قطنا وجرمانا' : area}</b></span><span className="chevron">⌄</span></button><button className="cart-button" onClick={() => setCartOpen(true)} aria-label={`السلة، ${cart.length} منتجات`}>سلتك <span className="cart-icon">♧</span><i>{cart.length}</i></button></div>
+        <div className="header-actions">
+          <button className="location" onClick={() => document.getElementById('area-filter')?.focus()}><span>⌖</span><span><small>منطقتك</small><b>{area === 'كل المناطق' ? 'قطنا وجرمانا' : area}</b></span><span className="chevron">⌄</span></button>
+          <button className="cart-button" onClick={() => setCartOpen(true)} aria-label={`السلة، ${cart.length} منتجات`}>سلتك <span className="cart-icon">♧</span><i>{cart.length}</i></button>
+          <button className="account-button" onClick={() => session ? setAccountOpen(true) : setAuthOpen(true)}>{session ? 'حسابي' : 'دخول'}</button>
+        </div>
       </header>
 
       <main id="home">
         <section className="hero">
-          <div className="hero-copy"><span className="eyebrow"><i /> من حارتنا، إلك</span><h1>أشياء حلوة،<br /><em>من ناسنا.</em></h1><p>اكتشف منتجات صُنعت بمحبة من متاجر قريبة منك. اختار اللي بتحبه وخلي دعمك يوصل لأصحابه.</p><a href="#products" className="primary-link">تسوّق من حولك <span>←</span></a><div className="hero-trust"><span className="avatar-stack"><i>🌿</i><i>🧵</i><i>🏺</i></span><span>متاجر محلية<br /><b>من قطنا وجرمانا</b></span></div></div>
+          <div className="hero-copy"><span className="eyebrow"><i /> من حارتنا، إلك</span><h1>أشياء حلوة،<br /><em>من ناسنا.</em></h1><p>منصة تجمع المتاجر والمنتجات المحلية. تصفّح حسب الفئة والمنطقة، واكتشف حكاية كل متجر.</p><a href="#products" className="primary-link">تسوّق من حولك <span>←</span></a><div className="hero-trust"><span className="avatar-stack"><i>🌿</i><i>🧵</i><i>🏺</i></span><span>{isSupabaseConfigured ? 'متاجر شامنا' : 'متاجر توضيحية'}<br /><b>قطنا وجرمانا</b></span></div></div>
           <div className="hero-art" aria-label="سلة منتجات محلية مرسومة"><div className="sun-orb" /><div className="art-leaf leaf-one">✿</div><div className="art-leaf leaf-two">✿</div><div className="art-card card-back">🌿<span>خيرات الدار</span></div><div className="art-card card-front">🏺<span>دار الحرف</span></div><div className="art-tag">من قلب الشام<br /><b>إلك بكل محبة</b></div><div className="hero-sticker">صنع<br />محلياً <span>✳</span></div></div>
           <div className="hero-bottom"><span>⌄</span><small>اكتشف حكايات المتاجر القريبة</small><span className="hero-line" /></div>
         </section>
 
         <section className="category-section" aria-label="تسوق حسب الفئة"><div className="section-heading"><div><span className="eyebrow">اختار على ذوقك</span><h2>من وين بدك تبلّش؟</h2></div><a href="#products">كل المنتجات <span>←</span></a></div><div className="category-list">{categories.map((item) => <button className={`category-chip ${category === item.name ? 'selected' : ''}`} key={item.name} onClick={() => setCategory(item.name)}><span>{item.icon}</span>{item.name}</button>)}</div></section>
 
-        <section className="products-section" id="products"><div className="section-heading product-heading"><div><span className="eyebrow">اختيرت إلك</span><h2>من متاجر قريبة</h2></div><label className="area-select">⌖ <select id="area-filter" value={area} onChange={(event) => setArea(event.target.value)} aria-label="فلترة حسب المنطقة"><option>كل المناطق</option><option>قطنا</option><option>جرمانا</option></select><span>⌄</span></label></div><div className="demo-note"><span>✳</span> المنتجات المعروضة أمثلة تجريبية للتصميم، وليست عروضاً للبيع حالياً.</div>
-          {visibleProducts.length ? <div className="product-grid">{visibleProducts.map((product) => <article className="product-card" key={product.id}><div className={`product-visual ${product.color}`}><span className="product-note">{product.note}</span><span className="product-emoji">{product.emoji}</span><button className="favorite" aria-label={`حفظ ${product.name}`} onClick={(event) => event.currentTarget.classList.toggle('active')}>♡</button></div><div className="product-meta"><span>{product.category} <i>·</i> {product.area}</span><span className="store-name">{product.store}</span></div><h3>{product.name}</h3><div className="product-bottom"><div className="price">{formatPrice(product.price)} <small>ل.س</small></div><button className="add-button" onClick={() => addToCart(product.id)} aria-label={`أضف ${product.name} إلى السلة`}>＋</button></div></article>)}</div> : <div className="empty-state"><span>⌕</span><h3>ما لقينا شي بهالبحث</h3><p>جرّب كلمة تانية أو اختار فئة مختلفة.</p><button onClick={() => { setCategory('الكل'); setArea('كل المناطق'); setQuery('') }}>عرض كل المنتجات</button></div>}
+        <section className="products-section" id="products">
+          <div className="section-heading product-heading"><div><span className="eyebrow">اختيرت إلك</span><h2>{storeFocus ? products.find((product) => product.storeId === storeFocus)?.store : 'من متاجر قريبة'}</h2></div><label className="area-select">⌖ <select id="area-filter" value={area} onChange={(event) => setArea(event.target.value)} aria-label="فلترة حسب المنطقة"><option>كل المناطق</option>{cityNames.map((city) => <option key={city}>{city}</option>)}</select><span>⌄</span></label></div>
+          {storeFocus && <div className="store-banner"><span>{products.find((product) => product.storeId === storeFocus)?.storeDescription || 'متجر محلي على شامنا'}</span><button className="text-button" onClick={() => setStoreFocus('')}>كل المتاجر</button></div>}
+          {!isSupabaseConfigured && <div className="demo-note"><span>✳</span> المنتجات المعروضة أمثلة تجريبية للتصميم، وليست عروضاً للبيع حالياً.</div>}
+          {catalogError && <div className="inline-error" role="alert">تعذر تحميل كتالوج المتجر. {catalogError}</div>}
+          {catalogLoading ? <div className="loading-state" role="status">عم نحمّل المنتجات…</div> : visibleProducts.length ? <div className="product-grid">{visibleProducts.map((product) => <article className="product-card" key={product.id}>
+            <div className={`product-visual ${product.color}`}>
+              <span className="product-note">{product.note}</span>
+              {product.imageUrl ? <img className="product-image" src={product.imageUrl} alt={product.name} loading="lazy" /> : <span className="product-emoji">{product.emoji}</span>}
+              <button className="favorite" aria-label={`حفظ ${product.name}`} onClick={(event) => event.currentTarget.classList.toggle('active')}>♡</button>
+            </div>
+            <div className="product-meta"><span>{product.category} <i>·</i> {product.area}</span><button className="store-link" onClick={() => { if (product.storeId) { setStoreFocus(product.storeId); setCategory('الكل'); document.getElementById('products')?.scrollIntoView({ behavior: 'smooth' }) } }}>{product.store}</button></div>
+            <h3><button className="product-title-button" onClick={() => setSelectedProduct(product)}>{product.name}</button></h3>
+            <div className="product-bottom"><div className="price">{formatPrice(product.price)} <small>ل.س</small></div><button className="add-button" disabled={product.stockCount === 0 || (product.stockCount !== undefined && cart.filter((id) => id === product.id).length >= product.stockCount)} onClick={() => addToCart(product)} aria-label={`أضف ${product.name} إلى السلة`}>＋</button></div>
+          </article>)}</div> : <div className="empty-state"><span>⌕</span><h3>{catalogError ? 'الكتالوج غير متاح حالياً' : 'ما لقينا شي بهالبحث'}</h3><p>{catalogError ? 'تحقق من ربط قاعدة البيانات وسياسات الوصول.' : 'جرّب كلمة تانية أو اختار فئة مختلفة.'}</p><button onClick={categoryReset}>عرض كل المنتجات</button></div>}
         </section>
 
         <section className="local-callout"><div className="callout-flower">✿</div><div><span className="eyebrow">كل متجر إله حكاية</span><h2>من حارتك،<br />لبيتك ومحبتك.</h2><p>خلف كل قطعة حدا تعب عليها. تسوّق محلي وخلّي خيرك يلفّ ويرجع.</p></div><a href="#products">تعرّف على المتاجر <span>←</span></a><span className="callout-star">✳</span></section>
       </main>
 
-      <footer><a className="brand footer-brand" href="#home"><span className="brand-mark">ش</span><span><b>شامنا</b><small>سوقنا أقرب</small></span></a><span>من أهلنا، لأهلنا. <b>♡</b></span><small>© شامنا SHAMNA · نسخة تجريبية</small></footer>
+      <footer><a className="brand footer-brand" href="#home"><span className="brand-mark">ش</span><span><b>شامنا</b><small>سوقنا أقرب</small></span></a><span>من أهلنا، لأهلنا. <b>♡</b></span><small>© شامنا SHAMNA · {isSupabaseConfigured ? 'متجر تجريبي' : 'وضع العرض التجريبي'}</small></footer>
 
       {notice && <div className="toast" role="status">✓ &nbsp;{notice}</div>}
-      {cartOpen && <div className="overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) setCartOpen(false) }}><aside className="cart-panel"><div className="cart-head"><div><span className="eyebrow">سلتك المحلية</span><h2>طلباتك <i>({cart.length})</i></h2></div><button onClick={() => setCartOpen(false)} aria-label="إغلاق السلة">×</button></div>{cartProducts.length ? <><div className="cart-items">{cartProducts.map((product, index) => <div className="cart-row" key={`${product.id}-${index}`}><span className={`cart-thumb ${product.color}`}>{product.emoji}</span><div><b>{product.name}</b><small>{product.store} · {product.area}</small></div><strong>{formatPrice(product.price)} ل.س</strong></div>)}</div><div className="cart-total"><span>المجموع التقريبي</span><b>{formatPrice(total)} ل.س</b><small>الأسعار تجريبية ولا تشمل التوصيل</small></div><button className="checkout-button" onClick={() => setNotice('إتمام الطلب غير متاح في النسخة التجريبية')}>متابعة الطلب <span>←</span></button><button className="clear-cart" onClick={() => setCart([])}>إفراغ السلة</button></> : <div className="cart-empty"><span>♧</span><h3>سلتك لسا فاضية</h3><p>لما تلاقي شي حلو، ضيفه هون.</p><button onClick={() => setCartOpen(false)}>تصفّح المنتجات</button></div>}</aside></div>}
+
+      {cartOpen && <div className="overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) setCartOpen(false) }}><aside className="cart-panel">
+        <div className="cart-head"><div><span className="eyebrow">سلتك المحلية</span><h2>طلباتك <i>({cart.length})</i></h2></div><button onClick={() => setCartOpen(false)} aria-label="إغلاق السلة">×</button></div>
+        {cartProducts.length ? <><div className="cart-items">{cartProducts.map((product, index) => <div className="cart-row" key={`${product.id}-${index}`}><span className={`cart-thumb ${product.color}`}>{product.imageUrl ? <img src={product.imageUrl} alt="" /> : product.emoji}</span><div><b>{product.name}</b><small>{product.store} · {product.area}</small></div><strong>{formatPrice(product.price)} ل.س</strong><button className="remove-item" aria-label={`حذف ${product.name}`} onClick={() => setCart((items) => items.filter((_, itemIndex) => itemIndex !== index))}>×</button></div>)}</div><div className="cart-total"><span>المجموع قبل التوصيل</span><b>{formatPrice(total)} ل.س</b><small>تُراجع الأسعار والمخزون عند تأكيد الطلب، ويحسب رسم التوصيل حسب المنطقة والمتجر.</small></div><button className="checkout-button" onClick={() => { setCartOpen(false); setCheckoutOpen(true) }}>متابعة الطلب <span>←</span></button><button className="clear-cart" onClick={() => setCart([])}>إفراغ السلة</button></> : <div className="cart-empty"><span>♧</span><h3>سلتك لسا فاضية</h3><p>لما تلاقي شي حلو، ضيفه هون.</p><button onClick={() => setCartOpen(false)}>تصفّح المنتجات</button></div>}
+      </aside></div>}
+
+      {selectedProduct && <div className="overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) setSelectedProduct(null) }}><section className="dialog product-dialog" role="dialog" aria-modal="true" aria-label={selectedProduct.name}>
+        <div className="dialog-heading"><span className="eyebrow">{selectedProduct.store} · {selectedProduct.area}</span><button className="icon-button" onClick={() => setSelectedProduct(null)} aria-label="إغلاق">×</button></div>
+        <div className={`detail-visual ${selectedProduct.color}`}>{selectedProduct.imageUrl ? <img src={selectedProduct.imageUrl} alt={selectedProduct.name} /> : <span>{selectedProduct.emoji}</span>}</div>
+        <h2>{selectedProduct.name}</h2><p>{selectedProduct.description || selectedProduct.note}</p><strong className="detail-price">{formatPrice(selectedProduct.price)} ل.س</strong><button className="form-submit" onClick={() => { addToCart(selectedProduct); setSelectedProduct(null) }}>أضف إلى السلة</button>
+      </section></div>}
+
+      {authOpen && <AuthDialog onClose={() => setAuthOpen(false)} />}
+      {accountOpen && session && <AccountCenter session={session} roles={roles} onClose={() => setAccountOpen(false)} notify={notify} />}
+      {checkoutOpen && <CheckoutDialog
+        session={session}
+        cart={cartProducts}
+        onClose={() => setCheckoutOpen(false)}
+        onRequireAuth={() => { setCheckoutOpen(false); setAuthOpen(true) }}
+        onCompleted={() => { setCart([]); setCheckoutOpen(false); notify('تم تسجيل طلبك، وسيظهر في حسابك بعد تأكيد المتجر.') }}
+      />}
     </>
   )
 }
