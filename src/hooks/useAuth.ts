@@ -14,29 +14,38 @@ export function useAuth() {
     }
 
     let alive = true
+    let activeUserId: string | null = null
     const refreshRoles = async (userId: string) => {
       const { data } = await supabase!.from('user_roles').select('role').eq('user_id', userId)
       if (alive) setRoles((data ?? []).map((row) => row.role as AppRole))
     }
+    const refreshCurrentUserRoles = () => {
+      if (activeUserId) void refreshRoles(activeUserId)
+    }
+    window.addEventListener('focus', refreshCurrentUserRoles)
 
     void supabase.auth.getSession().then(async ({ data }) => {
       if (!alive) return
+      activeUserId = data.session?.user.id ?? null
       setSession(data.session)
-      if (data.session?.user.id) await refreshRoles(data.session.user.id)
+      if (activeUserId) await refreshRoles(activeUserId)
       if (alive) setLoading(false)
     })
 
     const { data: authListener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      activeUserId = nextSession?.user.id ?? null
       setSession(nextSession)
       setRoles([])
-      if (nextSession?.user.id) {
-        window.setTimeout(() => { void refreshRoles(nextSession.user.id) }, 0)
+      if (activeUserId) {
+        const userId = activeUserId
+        window.setTimeout(() => { void refreshRoles(userId) }, 0)
       }
       setLoading(false)
     })
 
     return () => {
       alive = false
+      window.removeEventListener('focus', refreshCurrentUserRoles)
       authListener.subscription.unsubscribe()
     }
   }, [])
