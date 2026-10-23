@@ -1,172 +1,169 @@
 import { useEffect, useMemo, useState } from 'react'
-import type { User } from '@supabase/supabase-js'
-import { AccountDialog } from './components/AccountDialog'
-import { ProductCard } from './components/ProductCard'
-import { ProductDetailsDialog } from './components/ProductDetailsDialog'
-import { SiteHeader } from './components/SiteHeader'
-import { SellerCenter } from './components/SellerCenter'
-import { StoreDetailsDialog } from './components/StoreDetailsDialog'
-import { areas as demoAreas, categories as demoCategories, demoProducts } from './data/demoCatalog'
-import { loadCatalog, type CatalogData } from './lib/catalog'
-import { supabase } from './lib/supabase'
-import type { Product, StorePreview } from './types'
+import type { Product } from './lib/models'
+import { demoProducts, loadCatalog, loadCategories, loadCities } from './lib/catalog'
+import { isSupabaseConfigured } from './lib/supabase'
+import { useAuth } from './hooks/useAuth'
+import { AccountCenter } from './components/AccountCenter'
+import { AuthDialog } from './components/AuthDialog'
+import { CheckoutDialog } from './components/CheckoutDialog'
+import { filterCatalog, filterFavorites, summarizeCart } from './lib/marketplace'
 
-type CatalogState = 'demo' | 'loading' | 'ready' | 'empty' | 'error'
+const categoryIcons: Record<string, string> = { 'الكل': '✳', 'مونة': '🍯', 'منزل': '🏺', 'أزياء': '🧵', 'عناية': '🌱' }
+const formatPrice = (price: number) => new Intl.NumberFormat('ar-SY').format(price)
 
-const demoStores: StorePreview[] = [...new Set(demoProducts.map((product) => product.storeName))].map((name, index) => {
-  const product = demoProducts.find((item) => item.storeName === name)!
-  return { id: `sample-store-${index + 1}`, name, area: product.area, description: product.description }
-})
-
-const categoryIcons = ['✳', '🍯', '🏺', '🧵', '🌱']
-const emptyCatalog: CatalogData = { products: [], categories: [], areas: [], stores: [] }
-
-export default function App() {
-  const isDemo = !supabase
+function App() {
+  const { session, roles } = useAuth()
+  const [products, setProducts] = useState<Product[]>(isSupabaseConfigured ? [] : demoProducts)
+  const [categoryNames, setCategoryNames] = useState(['مونة', 'منزل', 'أزياء', 'عناية'])
+  const [cityNames, setCityNames] = useState(['قطنا', 'جرمانا'])
+  const [catalogLoading, setCatalogLoading] = useState(isSupabaseConfigured)
+  const [catalogError, setCatalogError] = useState('')
+  const [category, setCategory] = useState('الكل')
+  const [area, setArea] = useState('كل المناطق')
+  const [storeFocus, setStoreFocus] = useState('')
   const [query, setQuery] = useState('')
-  const [area, setArea] = useState(demoAreas[0]!)
-  const [category, setCategory] = useState(demoCategories[0]!)
+  const [favoriteIds, setFavoriteIds] = useState<string[]>(() => {
+    try {
+      const value: unknown = JSON.parse(localStorage.getItem('shamna-favorites') ?? '[]')
+      return Array.isArray(value) && value.every((item) => typeof item === 'string') ? value : []
+    } catch { return [] }
+  })
   const [favoritesOnly, setFavoritesOnly] = useState(false)
-  const [favorites, setFavorites] = useState<string[]>([])
-  const [cart, setCart] = useState<Product[]>([])
+  const [cart, setCart] = useState<string[]>(() => {
+    try {
+      const saved: unknown = JSON.parse(localStorage.getItem('shamna-cart') ?? '[]')
+      return Array.isArray(saved) && saved.every((item) => typeof item === 'string') ? saved : []
+    } catch { return [] }
+  })
   const [cartOpen, setCartOpen] = useState(false)
   const [accountOpen, setAccountOpen] = useState(false)
+  const [authOpen, setAuthOpen] = useState(false)
+  const [checkoutOpen, setCheckoutOpen] = useState(false)
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null)
-  const [selectedStore, setSelectedStore] = useState<StorePreview | null>(null)
-  const [user, setUser] = useState<User | null>(null)
   const [notice, setNotice] = useState('')
-  const [refreshToken, setRefreshToken] = useState(0)
-  const [catalogState, setCatalogState] = useState<CatalogState>(isDemo ? 'demo' : 'loading')
-  const [catalog, setCatalog] = useState<CatalogData>(() => isDemo ? {
-    products: demoProducts,
-    categories: demoCategories.slice(1),
-    areas: demoAreas.slice(1),
-    stores: demoStores,
-  } : emptyCatalog)
+
+  useEffect(() => { localStorage.setItem('shamna-cart', JSON.stringify(cart)) }, [cart])
+  useEffect(() => { localStorage.setItem('shamna-favorites', JSON.stringify(favoriteIds)) }, [favoriteIds])
 
   useEffect(() => {
-    if (!supabase) return
-    let cancelled = false
-    setCatalogState('loading')
-    void loadCatalog().then((result) => {
-      if (cancelled) return
-      setCatalog(result)
-      setCatalogState(result.products.length ? 'ready' : 'empty')
-    }).catch(() => {
-      if (!cancelled) setCatalogState('error')
-    })
-    return () => { cancelled = true }
-  }, [refreshToken])
-
-  useEffect(() => {
-    if (!supabase) return
     let active = true
-    void supabase.auth.getSession().then(({ data }) => {
-      if (active) setUser(data.session?.user ?? null)
-    })
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null)
-    })
-    return () => {
-      active = false
-      subscription.unsubscribe()
-    }
+    void Promise.all([loadCatalog(), loadCategories(), loadCities()])
+      .then(([loadedProducts, loadedCategories, loadedCities]) => {
+        if (!active) return
+        setProducts(loadedProducts)
+        setCategoryNames(loadedCategories)
+        setCityNames(loadedCities)
+        setCatalogError('')
+      })
+      .catch((cause: unknown) => {
+        if (active) setCatalogError(cause instanceof Error ? cause.message : 'تعذر تحميل المنتجات.')
+      })
+      .finally(() => { if (active) setCatalogLoading(false) })
+    return () => { active = false }
   }, [])
 
-  const categoryOptions = ['الكل', ...catalog.categories]
-  const areaOptions = ['كل المناطق', ...catalog.areas]
-  const products = useMemo(() => {
-    if (catalogState === 'error' || catalogState === 'loading') return []
-    const search = query.trim().toLocaleLowerCase('ar')
-    return catalog.products.filter((product) => {
-      const matchesCategory = category === 'الكل' || product.category === category
-      const matchesArea = area === 'كل المناطق' || product.area === area
-      const matchesSearch = !search || `${product.name} ${product.storeName} ${product.category}`.toLocaleLowerCase('ar').includes(search)
-      const matchesFavorites = !favoritesOnly || favorites.includes(product.id)
-      return matchesCategory && matchesArea && matchesSearch && matchesFavorites
-    })
-  }, [area, catalog.products, catalogState, category, favorites, favoritesOnly, query])
+  const categories = useMemo(() => [
+    { name: 'الكل', icon: categoryIcons['الكل'] },
+    ...categoryNames.map((name) => ({ name, icon: categoryIcons[name] ?? '✳' })),
+  ], [categoryNames])
 
-  const showNotice = (message: string) => {
+  const matchingProducts = useMemo(() => filterCatalog(products, {
+    category, area, storeId: storeFocus, query,
+  }), [area, category, products, query, storeFocus])
+  const visibleProducts = useMemo(
+    () => favoritesOnly ? filterFavorites(matchingProducts, favoriteIds) : matchingProducts,
+    [favoriteIds, favoritesOnly, matchingProducts],
+  )
+
+  const cartProducts = cart.map((id) => products.find((product) => product.id === id)).filter((item): item is Product => Boolean(item))
+  const { subtotal: total } = summarizeCart(cartProducts)
+
+  const notify = (message: string) => {
     setNotice(message)
-    window.setTimeout(() => setNotice(''), 2200)
+    window.setTimeout(() => setNotice(''), 2600)
+  }
+
+  const addToCart = (product: Product) => {
+    setCart((items) => [...items, product.id])
+    notify(product.isDemo ? 'انضاف المنتج إلى السلة التجريبية' : 'انضاف المنتج لسلتك')
   }
 
   const toggleFavorite = (productId: string) => {
-    setFavorites((current) => current.includes(productId)
+    setFavoriteIds((current) => current.includes(productId)
       ? current.filter((id) => id !== productId)
       : [...current, productId])
   }
 
-  const addToCart = (product: Product) => {
-    setCart((current) => [...current, product])
-    showNotice('أُضيف المنتج إلى السلة التجريبية.')
-  }
+  const categoryReset = () => { setCategory('الكل'); setArea('كل المناطق'); setQuery(''); setStoreFocus('') }
 
   return (
     <>
-      <SiteHeader
-        query={query}
-        onQueryChange={setQuery}
-        area={areaOptions.includes(area) ? area : areaOptions[0]!}
-        areaOptions={areaOptions}
-        onAreaChange={setArea}
-        cartCount={cart.length}
-        onCartClick={() => setCartOpen(true)}
-        userEmail={user?.email ?? null}
-        onAccountClick={() => setAccountOpen(true)}
-        isDemo={isDemo}
-      />
+      <div className="announcement">{isSupabaseConfigured ? 'سوق محلي من ناسنا · التوصيل حسب المناطق التي يحددها المتجر' : 'معاينة شامنا · المنتجات والأسعار أمثلة شكلية لا يمكن شراؤها'}</div>
+      <header className="site-header">
+        <a className="brand" href="#home" aria-label="شامنا الرئيسية"><span className="brand-mark">ش</span><span><b>شامنا</b><small>سوقنا أقرب</small></span></a>
+        <label className="search"><span aria-hidden="true">⌕</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="شو عم تدوّر اليوم؟" aria-label="ابحث عن المنتجات" /><kbd>بحث</kbd></label>
+        <div className="header-actions">
+          <button className="location" onClick={() => document.getElementById('area-filter')?.focus()}><span>⌖</span><span><small>منطقتك</small><b>{area === 'كل المناطق' ? 'قطنا وجرمانا' : area}</b></span><span className="chevron">⌄</span></button>
+          <button className="cart-button" onClick={() => setCartOpen(true)} aria-label={`السلة، ${cart.length} منتجات`}>سلتك <span className="cart-icon">♧</span><i>{cart.length}</i></button>
+          <button className="account-button" onClick={() => session ? setAccountOpen(true) : setAuthOpen(true)}>{session ? 'حسابي' : 'دخول'}</button>
+        </div>
+      </header>
+
       <main id="home">
-        <section className="hero page-width">
-          <div className="hero-copy">
-            <span className="eyebrow"><i /> من حارتنا، إلك</span>
-            <h1>أشياء حلوة،<br /><em>من ناسنا.</em></h1>
-            <p>اكتشف منتجات محلية من متاجر قريبة منك. تصفّح حسب الفئة والمنطقة وخلي دعمك يوصل لأصحابه.</p>
-            <a className="primary-button" href="#products">تصفّح المنتجات <span aria-hidden="true">←</span></a>
-            <div className="hero-note"><span aria-hidden="true">✳</span> نبدأ من قطنا وجرمانا، ونتوسع سوا.</div>
-          </div>
-          <div className="hero-illustration" aria-label="رسم توضيحي لمنتجات محلية">
-            <div className="hero-sun" />
-            <div className="hero-shape shape-sage"><span>🌿</span><small>من خيرات الدار</small></div>
-            <div className="hero-shape shape-clay"><span>🏺</span><small>صنع بمحبة</small></div>
-            <div className="hero-sticker">من قلب الشام<br /><b>إلك بكل محبة</b></div>
-          </div>
+        <section className="hero">
+          <div className="hero-copy"><span className="eyebrow"><i /> من حارتنا، إلك</span><h1>أشياء حلوة،<br /><em>من ناسنا.</em></h1><p>منصة تجمع المتاجر والمنتجات المحلية. تصفّح حسب الفئة والمنطقة، واكتشف حكاية كل متجر.</p><a href="#products" className="primary-link">تسوّق من حولك <span>←</span></a><div className="hero-trust"><span className="avatar-stack"><i>🌿</i><i>🧵</i><i>🏺</i></span><span>{isSupabaseConfigured ? 'متاجر شامنا' : 'متاجر توضيحية'}<br /><b>قطنا وجرمانا</b></span></div></div>
+          <div className="hero-art" aria-label="سلة منتجات محلية مرسومة"><div className="sun-orb" /><div className="art-leaf leaf-one">✿</div><div className="art-leaf leaf-two">✿</div><div className="art-card card-back">🌿<span>خيرات الدار</span></div><div className="art-card card-front">🏺<span>دار الحرف</span></div><div className="art-tag">من قلب الشام<br /><b>إلك بكل محبة</b></div><div className="hero-sticker">صنع<br />محلياً <span>✳</span></div></div>
+          <div className="hero-bottom"><span>⌄</span><small>اكتشف حكايات المتاجر القريبة</small><span className="hero-line" /></div>
         </section>
 
-        <section className="category-section page-width" aria-labelledby="category-title">
-          <div className="section-heading"><div><span className="eyebrow">اختار على ذوقك</span><h2 id="category-title">من وين بدك تبلّش؟</h2></div><span className="section-hint">{isDemo ? 'فئات عرض تجريبية' : 'فئات من قاعدة البيانات'}</span></div>
-          <div className="category-list" role="group" aria-label="فلترة حسب الفئة">
-            {categoryOptions.map((name, index) => <button className={`category-chip ${category === name ? 'selected' : ''}`} type="button" key={name} onClick={() => setCategory(name)} aria-pressed={category === name}><span aria-hidden="true">{categoryIcons[index % categoryIcons.length]}</span>{name}</button>)}
-          </div>
+        <section className="category-section" aria-label="تسوق حسب الفئة"><div className="section-heading"><div><span className="eyebrow">اختار على ذوقك</span><h2>من وين بدك تبلّش؟</h2></div><a href="#products">كل المنتجات <span>←</span></a></div><div className="category-list">{categories.map((item) => <button className={`category-chip ${category === item.name ? 'selected' : ''}`} key={item.name} onClick={() => setCategory(item.name)}><span>{item.icon}</span>{item.name}</button>)}</div></section>
+
+        <section className="products-section" id="products">
+          <div className="section-heading product-heading"><div><span className="eyebrow">اختيرت إلك</span><h2>{favoritesOnly ? 'منتجاتك المحفوظة' : storeFocus ? products.find((product) => product.storeId === storeFocus)?.store : 'من متاجر قريبة'}</h2></div><div className="product-controls"><button className="favorites-filter" type="button" aria-pressed={favoritesOnly} onClick={() => setFavoritesOnly((value) => !value)}>♡ المحفوظات <span>{favoriteIds.length}</span></button><label className="area-select">⌖ <select id="area-filter" value={area} onChange={(event) => setArea(event.target.value)} aria-label="فلترة حسب المنطقة"><option>كل المناطق</option>{cityNames.map((city) => <option key={city}>{city}</option>)}</select><span>⌄</span></label></div></div>
+          {storeFocus && <div className="store-banner"><span>{products.find((product) => product.storeId === storeFocus)?.storeDescription || 'متجر محلي على شامنا'}</span><button className="text-button" onClick={() => setStoreFocus('')}>كل المتاجر</button></div>}
+          {!isSupabaseConfigured && <div className="demo-note"><span>✳</span> المنتجات المعروضة أمثلة تجريبية للتصميم، وليست عروضاً للبيع حالياً.</div>}
+          {catalogError && <div className="inline-error" role="alert">تعذر تحميل كتالوج المتجر. {catalogError}</div>}
+          {catalogLoading ? <div className="loading-state" role="status">عم نحمّل المنتجات…</div> : visibleProducts.length ? <div className="product-grid">{visibleProducts.map((product) => <article className="product-card" key={product.id}>
+            <div className={`product-visual ${product.color}`}>
+              <span className="product-note">{product.note}</span>
+              {product.imageUrl ? <img className="product-image" src={product.imageUrl} alt={product.name} loading="lazy" /> : <span className="product-emoji">{product.emoji}</span>}
+              <button className={`favorite ${favoriteIds.includes(product.id) ? 'active' : ''}`} aria-label={`${favoriteIds.includes(product.id) ? 'إزالة من المحفوظات' : 'حفظ'} ${product.name}`} aria-pressed={favoriteIds.includes(product.id)} onClick={() => toggleFavorite(product.id)}>♡</button>
+            </div>
+            <div className="product-meta"><span>{product.category} <i>·</i> {product.area}</span><button className="store-link" onClick={() => { if (product.storeId) { setStoreFocus(product.storeId); setCategory('الكل'); document.getElementById('products')?.scrollIntoView({ behavior: 'smooth' }) } }}>{product.store}</button></div>
+            <h3><button className="product-title-button" onClick={() => setSelectedProduct(product)}>{product.name}</button></h3>
+            <div className="product-bottom"><div className="price">{formatPrice(product.price)} <small>ل.س</small></div><button className="add-button" disabled={product.stockCount === 0 || (product.stockCount !== undefined && cart.filter((id) => id === product.id).length >= product.stockCount)} onClick={() => addToCart(product)} aria-label={`أضف ${product.name} إلى السلة`}>＋</button></div>
+          </article>)}</div> : <div className="empty-state"><span>⌕</span><h3>{catalogError ? 'الكتالوج غير متاح حالياً' : favoritesOnly ? 'ما عندك منتجات محفوظة' : 'ما لقينا شي بهالبحث'}</h3><p>{catalogError ? 'تحقق من ربط قاعدة البيانات وسياسات الوصول.' : favoritesOnly ? 'اضغط ♡ على منتج ليظهر في هذه القائمة. المحفوظات تبقى على هذا الجهاز.' : 'جرّب كلمة تانية أو اختار فئة مختلفة.'}</p><button onClick={() => { setFavoritesOnly(false); categoryReset() }}>{favoritesOnly ? 'تصفّح المنتجات' : 'عرض كل المنتجات'}</button></div>}
         </section>
 
-        <section className="products-section page-width" id="products" aria-labelledby="products-title">
-          <div className="section-heading"><div><span className="eyebrow">اختيرت إلك</span><h2 id="products-title">{favoritesOnly ? 'منتجاتك المحفوظة' : 'منتجات من متاجر قريبة'}</h2><p className="section-hint">{catalogState === 'demo' ? `${products.length} منتجات تجريبية` : `${products.length} منتجات من الكتالوج`}</p></div><button className="saved-filter" type="button" onClick={() => setFavoritesOnly((current) => !current)} aria-pressed={favoritesOnly}>♡ المحفوظات <span>{favorites.length}</span></button></div>
-          {catalogState === 'loading' && <div className="catalog-message" role="status"><span className="loading-dot" /> جارٍ تحميل المنتجات والفئات والمناطق…</div>}
-          {catalogState === 'error' && <div className="catalog-message catalog-error" role="alert"><h3>تعذر تحميل الكتالوج</h3><p>تحقق من الاتصال وإعدادات Supabase وسياسات القراءة (RLS). لم نعرض بيانات تجريبية بدلًا من بيانات قاعدة البيانات.</p><button type="button" onClick={() => setRefreshToken((value) => value + 1)}>إعادة المحاولة</button></div>}
-          {catalogState !== 'loading' && catalogState !== 'error' && <>
-            <div className="product-grid">{products.map((product) => <ProductCard key={product.id} product={product} favorite={favorites.includes(product.id)} onToggleFavorite={toggleFavorite} onAdd={addToCart} onView={setSelectedProduct} />)}</div>
-            {products.length === 0 && <div className="empty-state"><span>⌕</span><h3>{catalogState === 'empty' && !favoritesOnly ? 'لا توجد منتجات معروضة حاليًا' : favoritesOnly ? 'ما عندك منتجات محفوظة' : 'ما لقينا نتائج'}</h3><p>{catalogState === 'empty' && !favoritesOnly ? 'قد يكون الكتالوج فارغًا أو لا توجد منتجات منشورة متاحة لحسابك.' : favoritesOnly ? 'اضغط ♡ على أي منتج ليظهر هنا.' : 'جرّب كلمة تانية أو اختار فئة أو منطقة مختلفة.'}</p><button type="button" onClick={() => { setQuery(''); setArea('كل المناطق'); setCategory('الكل'); setFavoritesOnly(false) }}>عرض كل المنتجات</button></div>}
-          </>}
-        </section>
-
-        <section className="stores-section" id="stores">
-          <div className="page-width"><div className="section-heading"><div><span className="eyebrow">ناس من منطقتك</span><h2>تعرّف على المتاجر</h2></div><span className="section-hint">{isDemo ? 'أمثلة غير مسجلة فعليًا' : 'متاجر معتمدة من قاعدة البيانات'}</span></div>
-            {catalog.stores.length ? <div className="store-list">{catalog.stores.map((store, index) => <button className="store-card" type="button" key={store.id} onClick={() => setSelectedStore(store)}><span aria-hidden="true">{['🌿', '🏺', '🧵'][index % 3]}</span><div><h3>{store.name}</h3><p>{store.area} · {store.description || (isDemo ? 'مثال توضيحي' : 'متجر محلي')}</p><small>عرض المتجر والمنتجات ←</small></div></button>)}</div> : <div className="store-empty">{isDemo ? 'لا توجد متاجر حقيقية في بيانات العرض.' : 'لا توجد متاجر معتمدة للعرض بعد.'}</div>}
-          </div>
-        </section>
-
-        <section className="steps-section page-width" id="how-it-works"><div className="section-heading"><div><span className="eyebrow">بكل بساطة</span><h2>من حارتك لحد بابك</h2></div><span className="section-hint">طريقة الطلب بعد تفعيل المتاجر</span></div><div className="steps-grid"><article><b>١</b><h3>اختار منتجك</h3><p>اكتشف المنتجات حسب الفئة والمنطقة.</p></article><article><b>٢</b><h3>أرسل طلبك</h3><p>أضف عنوانك ورقم تواصلك وتأكد من التوصيل.</p></article><article><b>٣</b><h3>ادفع عند الاستلام</h3><p>تدفع للمتجر عند وصول الطلب، حسب الخدمة المتاحة.</p></article></div></section>
-
-        <SellerCenter user={user} onSignIn={() => setAccountOpen(true)} />
+        <section className="local-callout"><div className="callout-flower">✿</div><div><span className="eyebrow">كل متجر إله حكاية</span><h2>من حارتك،<br />لبيتك ومحبتك.</h2><p>خلف كل قطعة حدا تعب عليها. تسوّق محلي وخلّي خيرك يلفّ ويرجع.</p></div><a href="#products">تعرّف على المتاجر <span>←</span></a><span className="callout-star">✳</span></section>
       </main>
-      <footer className="site-footer"><a className="brand" href="#home"><span className="brand-mark">ش</span><span className="brand-copy"><strong>شامنا</strong><small>سوقنا أقرب</small></span></a><span>من أهلنا، لأهلنا. ♡</span><small>© شامنا SHAMNA · {isDemo ? 'واجهة عرض تجريبية' : 'كتالوج متصل'}</small></footer>
-      {notice && <div className="toast" role="status">✓ {notice}</div>}
-      {cartOpen && <div className="overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) setCartOpen(false) }}><aside className="cart-panel" role="dialog" aria-modal="true" aria-labelledby="cart-title"><div className="cart-head"><h2 id="cart-title">سلتك التجريبية</h2><button type="button" aria-label="إغلاق السلة" onClick={() => setCartOpen(false)}>×</button></div>{cart.length === 0 ? <div className="cart-empty"><span>♧</span><h3>السلة فاضية</h3><p>أضف منتجًا من المتجر ليظهر هنا.</p></div> : <><div className="cart-items">{cart.map((product, index) => <article className="cart-row" key={`${product.id}-${index}`}><span className="cart-thumb" aria-hidden="true">{product.emoji}</span><div><h3>{product.name}</h3><p>{product.priceSyp.toLocaleString('ar-SY')} ل.س</p></div><button className="remove-item" type="button" onClick={() => setCart((current) => current.filter((_, itemIndex) => itemIndex !== index))} aria-label={`إزالة ${product.name}`}>إزالة</button></article>)}</div><div className="cart-total"><span>المجموع التجريبي</span><strong>{cart.reduce((sum, product) => sum + product.priceSyp, 0).toLocaleString('ar-SY')} ل.س</strong></div><button className="clear-cart" type="button" onClick={() => setCart([])}>إفراغ السلة</button></>}<p className="cart-demo-note">هذه سلة للعرض فقط؛ لا يتم إرسال طلب أو تحصيل مبلغ.</p></aside></div>}
-      {accountOpen && <AccountDialog user={user} onClose={() => setAccountOpen(false)} onAuthenticated={() => setAccountOpen(false)} />}
-      {selectedProduct && <ProductDetailsDialog product={selectedProduct} favorite={favorites.includes(selectedProduct.id)} onClose={() => setSelectedProduct(null)} onToggleFavorite={toggleFavorite} onAdd={addToCart} />}
-      {selectedStore && <StoreDetailsDialog store={selectedStore} products={catalog.products.filter((product) => product.storeId ? product.storeId === selectedStore.id : product.storeName === selectedStore.name)} isDemo={isDemo} onClose={() => setSelectedStore(null)} onViewProduct={(product) => { setSelectedStore(null); setSelectedProduct(product) }} />}
+
+      <footer><a className="brand footer-brand" href="#home"><span className="brand-mark">ش</span><span><b>شامنا</b><small>سوقنا أقرب</small></span></a><span>من أهلنا، لأهلنا. <b>♡</b></span><small>© شامنا SHAMNA · {isSupabaseConfigured ? 'متجر تجريبي' : 'وضع العرض التجريبي'}</small></footer>
+
+      {notice && <div className="toast" role="status">✓ &nbsp;{notice}</div>}
+
+      {cartOpen && <div className="overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) setCartOpen(false) }}><aside className="cart-panel">
+        <div className="cart-head"><div><span className="eyebrow">سلتك المحلية</span><h2>طلباتك <i>({cart.length})</i></h2></div><button onClick={() => setCartOpen(false)} aria-label="إغلاق السلة">×</button></div>
+        {cartProducts.length ? <><div className="cart-items">{cartProducts.map((product, index) => <div className="cart-row" key={`${product.id}-${index}`}><span className={`cart-thumb ${product.color}`}>{product.imageUrl ? <img src={product.imageUrl} alt="" /> : product.emoji}</span><div><b>{product.name}</b><small>{product.store} · {product.area}</small></div><strong>{formatPrice(product.price)} ل.س</strong><button className="remove-item" aria-label={`حذف ${product.name}`} onClick={() => setCart((items) => items.filter((_, itemIndex) => itemIndex !== index))}>×</button></div>)}</div><div className="cart-total"><span>المجموع قبل التوصيل</span><b>{formatPrice(total)} ل.س</b><small>تُراجع الأسعار والمخزون عند تأكيد الطلب، ويحسب رسم التوصيل حسب المنطقة والمتجر.</small></div><button className="checkout-button" onClick={() => { setCartOpen(false); setCheckoutOpen(true) }}>متابعة الطلب <span>←</span></button><button className="clear-cart" onClick={() => setCart([])}>إفراغ السلة</button></> : <div className="cart-empty"><span>♧</span><h3>سلتك لسا فاضية</h3><p>لما تلاقي شي حلو، ضيفه هون.</p><button onClick={() => setCartOpen(false)}>تصفّح المنتجات</button></div>}
+      </aside></div>}
+
+      {selectedProduct && <div className="overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) setSelectedProduct(null) }}><section className="dialog product-dialog" role="dialog" aria-modal="true" aria-label={selectedProduct.name}>
+        <div className="dialog-heading"><span className="eyebrow">{selectedProduct.store} · {selectedProduct.area}</span><button className="icon-button" onClick={() => setSelectedProduct(null)} aria-label="إغلاق">×</button></div>
+        <div className={`detail-visual ${selectedProduct.color}`}>{selectedProduct.imageUrl ? <img src={selectedProduct.imageUrl} alt={selectedProduct.name} /> : <span>{selectedProduct.emoji}</span>}</div>
+        <h2>{selectedProduct.name}</h2><p>{selectedProduct.description || selectedProduct.note}</p><strong className="detail-price">{formatPrice(selectedProduct.price)} ل.س</strong><button className="secondary-submit" aria-pressed={favoriteIds.includes(selectedProduct.id)} onClick={() => toggleFavorite(selectedProduct.id)}>{favoriteIds.includes(selectedProduct.id) ? 'إزالة من المحفوظات' : 'حفظ في المحفوظات على هذا الجهاز'}</button><button className="form-submit" onClick={() => { addToCart(selectedProduct); setSelectedProduct(null) }}>أضف إلى السلة</button>
+      </section></div>}
+
+      {authOpen && <AuthDialog onClose={() => setAuthOpen(false)} />}
+      {accountOpen && session && <AccountCenter session={session} roles={roles} onClose={() => setAccountOpen(false)} notify={notify} />}
+      {checkoutOpen && <CheckoutDialog
+        session={session}
+        cart={cartProducts}
+        onClose={() => setCheckoutOpen(false)}
+        onRequireAuth={() => { setCheckoutOpen(false); setAuthOpen(true) }}
+        onCompleted={() => { setCart([]); setCheckoutOpen(false); notify('تم تسجيل طلبك، وسيظهر في حسابك بعد تأكيد المتجر.') }}
+      />}
     </>
   )
 }
+
+export default App
