@@ -6,6 +6,10 @@ import { supabase } from '../lib/supabase'
 export function useAuth() {
   const [session, setSession] = useState<Session | null>(null)
   const [roles, setRoles] = useState<AppRole[]>([])
+  const [passwordRecovery, setPasswordRecovery] = useState(() => {
+    const callbackParams = new URLSearchParams(window.location.hash.slice(1) || window.location.search)
+    return callbackParams.get('type') === 'recovery'
+  })
   const [loading, setLoading] = useState(Boolean(supabase))
 
   useEffect(() => {
@@ -32,9 +36,11 @@ export function useAuth() {
       if (alive) setLoading(false)
     })
 
-    const { data: authListener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+    const { data: authListener } = supabase.auth.onAuthStateChange((event, nextSession) => {
       activeUserId = nextSession?.user.id ?? null
       setSession(nextSession)
+      if (event === 'PASSWORD_RECOVERY') setPasswordRecovery(true)
+      if (event === 'SIGNED_OUT') setPasswordRecovery(false)
       setRoles([])
       if (activeUserId) {
         const userId = activeUserId
@@ -50,5 +56,5 @@ export function useAuth() {
     }
   }, [])
 
-  return { session, roles, loading, isConfigured: Boolean(supabase) }
+  return { session, roles, loading, isConfigured: Boolean(supabase), passwordRecovery, clearPasswordRecovery: () => setPasswordRecovery(false) }
 }

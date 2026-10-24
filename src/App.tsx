@@ -5,6 +5,7 @@ import { isSupabaseConfigured } from './lib/supabase'
 import { useAuth } from './hooks/useAuth'
 import { AccountCenter } from './components/AccountCenter'
 import { AuthDialog } from './components/AuthDialog'
+import { PasswordRecoveryDialog } from './components/PasswordRecoveryDialog'
 import { CheckoutDialog } from './components/CheckoutDialog'
 import { filterCatalog, filterFavorites, summarizeCart } from './lib/marketplace'
 
@@ -12,7 +13,7 @@ const categoryIcons: Record<string, string> = { 'الكل': '✳', 'مونة': '
 const formatPrice = (price: number) => new Intl.NumberFormat('ar-SY').format(price)
 
 function App() {
-  const { session, roles } = useAuth()
+  const { session, roles, passwordRecovery, clearPasswordRecovery } = useAuth()
   const [products, setProducts] = useState<Product[]>(isSupabaseConfigured ? [] : demoProducts)
   const [stores, setStores] = useState<MarketplaceStore[]>([])
   const [categoryNames, setCategoryNames] = useState(['مونة', 'منزل', 'أزياء', 'عناية'])
@@ -189,6 +190,7 @@ function App() {
 
       {authOpen && <AuthDialog onClose={() => setAuthOpen(false)} />}
       {accountOpen && session && <AccountCenter session={session} roles={roles} onClose={() => setAccountOpen(false)} notify={notify} />}
+      {passwordRecovery && <PasswordRecoveryDialog onClose={clearPasswordRecovery} />}
       {checkoutOpen && <CheckoutDialog
         session={session}
         cart={cartProducts}
