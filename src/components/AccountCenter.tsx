@@ -9,6 +9,7 @@ import { useAccessibleDialog } from '../hooks/useAccessibleDialog'
 type AccountCenterProps = {
   session: Session
   roles: AppRole[]
+  presentation?: 'dialog' | 'page'
   onClose: () => void
   notify: (message: string) => void
 }
@@ -64,8 +65,9 @@ const transitions: Partial<Record<MarketplaceOrderStatus, MarketplaceOrderStatus
 const formatPrice = (value: number) => `${new Intl.NumberFormat('ar-SY').format(value)} ل.س`
 const formatDateTime = (value: string) => new Intl.DateTimeFormat('ar-SY', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value))
 
-export function AccountCenter({ session, roles, onClose, notify }: AccountCenterProps) {
-  const dialogRef = useAccessibleDialog<HTMLElement>(onClose)
+export function AccountCenter({ session, roles, presentation = 'dialog', onClose, notify }: AccountCenterProps) {
+  const isDialog = presentation === 'dialog'
+  const dialogRef = useAccessibleDialog<HTMLElement>(onClose, isDialog)
   const [store, setStore] = useState<Store | null>(null)
   const [cities, setCities] = useState<City[]>([])
   const [categories, setCategories] = useState<Category[]>([])
@@ -413,8 +415,8 @@ export function AccountCenter({ session, roles, onClose, notify }: AccountCenter
   }
 
   return (
-    <div className="overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
-      <section ref={dialogRef} tabIndex={-1} className="dialog account-dialog" role="dialog" aria-modal="true" aria-labelledby="account-title">
+    <div className={isDialog ? 'overlay' : 'account-page-shell'} onMouseDown={isDialog ? (event) => { if (event.target === event.currentTarget) onClose() } : undefined}>
+      <section ref={isDialog ? dialogRef : undefined} tabIndex={isDialog ? -1 : undefined} className={`dialog account-dialog${isDialog ? '' : ' account-page'}`} role={isDialog ? 'dialog' : undefined} aria-modal={isDialog ? true : undefined} aria-labelledby="account-title">
         <div className="dialog-heading">
           <div><span className="eyebrow">حساب شامنا</span><h2 id="account-title">أهلاً {displayName || session.user.email}</h2></div>
           <button className="icon-button" onClick={onClose} aria-label="إغلاق">×</button>

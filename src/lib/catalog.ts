@@ -17,6 +17,7 @@ export const demoStores: MarketplaceStore[] = [
   { id: 'demo-crafts', name: 'دار الحرف', description: 'قطع منزلية مصنوعة يدويًا بحكاية شامية.', area: 'قطنا', productCount: 1, isDemo: true },
   { id: 'demo-thread', name: 'خيط وحكاية', description: 'تطريز وقطع قماشية بتفاصيل محلية.', area: 'جرمانا', productCount: 2, isDemo: true },
   { id: 'demo-soap', name: 'بيت الصابون', description: 'عناية طبيعية مستوحاة من صناعة الصابون السوري.', area: 'جرمانا', productCount: 1, isDemo: true },
+  { id: 'demo-candles', name: 'ضو الشام', description: 'شموع بروائح دافئة مصنوعة يدويًا.', area: 'جرمانا', productCount: 1, isDemo: true },
 ]
 
 type CatalogRow = {
