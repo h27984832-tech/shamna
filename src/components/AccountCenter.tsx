@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import type { AuthSession as Session } from '@supabase/supabase-js'
 import type { AppRole, MarketplaceOrderStatus, StoreStatus } from '../lib/models'
+import { userFacingError } from '../lib/user-facing-error'
 import { supabase } from '../lib/supabase'
 
 type AccountCenterProps = {
@@ -93,7 +94,7 @@ export function AccountCenter({ session, roles, onClose, notify }: AccountCenter
       supabase.from('orders').select('id,status,total_syp,created_at').eq('customer_id', session.user.id).order('created_at', { ascending: false }).limit(20),
     ])
 
-    if (storeResult.error && storeResult.error.code !== 'PGRST116') setError(storeResult.error.message)
+    if (storeResult.error && storeResult.error.code !== 'PGRST116') setError(userFacingError(storeResult.error, 'تعذر تحميل بيانات المتجر.'))
     const ownStore = storeResult.data as Store | null
     setStore(ownStore)
     const allCities = (citiesResult.data ?? []) as City[]
@@ -112,8 +113,8 @@ export function AccountCenter({ session, roles, onClose, notify }: AccountCenter
         supabase.from('products').select('id,name,description,category_id,price_syp,stock_count,is_active').eq('store_id', ownStore.id).order('created_at', { ascending: false }),
         supabase.from('store_orders').select('id,status,total_syp,created_at,order_items(product_name_snapshot,quantity)').eq('store_id', ownStore.id).order('created_at', { ascending: false }).limit(30),
       ])
-      if (productsResult.error) setError(productsResult.error.message)
-      if (ordersResult.error) setError(ordersResult.error.message)
+      if (productsResult.error) setError(userFacingError(productsResult.error, 'تعذر تحميل منتجات المتجر.'))
+      if (ordersResult.error) setError(userFacingError(ordersResult.error, 'تعذر تحميل طلبات المتجر.'))
       setProducts((productsResult.data ?? []) as OwnedProduct[])
       setSellerOrders((ordersResult.data ?? []) as SellerOrder[])
     }
@@ -125,9 +126,9 @@ export function AccountCenter({ session, roles, onClose, notify }: AccountCenter
         supabase.from('orders').select('id,status,total_syp,created_at,store_orders(id,status,stores(name))').order('created_at', { ascending: false }).limit(100),
         supabase.from('admin_audit_log').select('id,action,entity_table,entity_id,created_at').order('created_at', { ascending: false }).limit(30),
       ])
-      if (pendingResult.error) setError(pendingResult.error.message)
-      if (productsResult.error) setError(productsResult.error.message)
-      if (ordersResult.error) setError(ordersResult.error.message)
+      if (pendingResult.error) setError(userFacingError(pendingResult.error, 'تعذر تحميل طلبات المتاجر.'))
+      if (productsResult.error) setError(userFacingError(productsResult.error, 'تعذر تحميل المنتجات.'))
+      if (ordersResult.error) setError(userFacingError(ordersResult.error, 'تعذر تحميل الطلبات.'))
       if (auditResult.error) setError('تعذر تحميل سجل التدقيق. تحقق من سياسة قراءة سجل الإدارة.')
       setPendingStores((pendingResult.data ?? []) as PendingStore[])
       setAdminProducts((productsResult.data ?? []) as AdminProduct[])
@@ -150,7 +151,7 @@ export function AccountCenter({ session, roles, onClose, notify }: AccountCenter
       await reload()
       notify(successMessage)
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'تعذر إكمال العملية.')
+      setError(userFacingError(cause, 'تعذر إكمال العملية. تحقق من الاتصال وصلاحية الحساب ثم حاول مجددًا.'))
     } finally {
       setBusy(false)
     }
@@ -364,7 +365,7 @@ export function AccountCenter({ session, roles, onClose, notify }: AccountCenter
 
   const signOut = async () => {
     const { error: signOutError } = await supabase!.auth.signOut()
-    if (signOutError) setError(signOutError.message)
+    if (signOutError) setError(userFacingError(signOutError, 'تعذر تسجيل الخروج. حاول مجددًا.'))
     else onClose()
   }
 

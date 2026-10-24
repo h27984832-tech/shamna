@@ -11,7 +11,7 @@
     "preview": "vite preview",
     "typecheck": "tsc6 -b --pretty",
     "lint": "eslint .",
-    "test": "vitest run",
+    "test": "vitest run && node scripts/check-rls-migration.mjs",
     "test:watch": "vitest"
   },
   "dependencies": {

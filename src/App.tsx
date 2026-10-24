@@ -8,12 +8,13 @@ import { AuthDialog } from './components/AuthDialog'
 import { PasswordRecoveryDialog } from './components/PasswordRecoveryDialog'
 import { CheckoutDialog } from './components/CheckoutDialog'
 import { filterCatalog, filterFavorites, summarizeCart } from './lib/marketplace'
+import { userFacingError } from './lib/user-facing-error'
 
 const categoryIcons: Record<string, string> = { 'الكل': '✳', 'مونة': '🍯', 'منزل': '🏺', 'أزياء': '🧵', 'عناية': '🌱' }
 const formatPrice = (price: number) => new Intl.NumberFormat('ar-SY').format(price)
 
 function App() {
-  const { session, roles, passwordRecovery, clearPasswordRecovery } = useAuth()
+  const { session, roles, loading: authLoading, passwordRecovery, clearPasswordRecovery } = useAuth()
   const [products, setProducts] = useState<Product[]>(isSupabaseConfigured ? [] : demoProducts)
   const [stores, setStores] = useState<MarketplaceStore[]>([])
   const [categoryNames, setCategoryNames] = useState(['مونة', 'منزل', 'أزياء', 'عناية'])
@@ -61,13 +62,13 @@ function App() {
         setCatalogError('')
       })
       .catch((cause: unknown) => {
-        if (active) setCatalogError(cause instanceof Error ? cause.message : 'تعذر تحميل المنتجات.')
+        if (active) setCatalogError(userFacingError(cause, 'تعذر تحميل المنتجات. تحقق من اتصالك وحاول تحديث الصفحة.'))
       })
       .finally(() => { if (active) setCatalogLoading(false) })
     void loadStores()
       .then((loadedStores) => { if (active) setStores(loadedStores) })
       .catch((cause: unknown) => {
-        if (active) setStoreError(cause instanceof Error ? cause.message : 'تعذر تحميل المتاجر.')
+        if (active) setStoreError(userFacingError(cause, 'تعذر تحميل المتاجر. حاول تحديث الصفحة بعد قليل.'))
       })
       .finally(() => { if (active) setStoresLoading(false) })
     return () => { active = false }
@@ -127,7 +128,7 @@ function App() {
         <div className="header-actions">
           <button className="location" onClick={() => document.getElementById('area-filter')?.focus()}><span>⌖</span><span><small>منطقتك</small><b>{area === 'كل المناطق' ? 'قطنا وجرمانا' : area}</b></span><span className="chevron">⌄</span></button>
           <button className="cart-button" onClick={() => setCartOpen(true)} aria-label={`السلة، ${cart.length} منتجات`}>سلتك <span className="cart-icon">♧</span><i>{cart.length}</i></button>
-          <button className="account-button" onClick={() => session ? setAccountOpen(true) : setAuthOpen(true)}>{session ? 'حسابي' : 'دخول'}</button>
+          <button className="account-button" disabled={authLoading} aria-busy={authLoading} onClick={() => session ? setAccountOpen(true) : setAuthOpen(true)}>{authLoading ? 'جارٍ التحميل…' : session ? 'حسابي' : 'دخول'}</button>
         </div>
       </header>
 
@@ -188,7 +189,7 @@ function App() {
         <h2>{selectedProduct.name}</h2><p>{selectedProduct.description || selectedProduct.note}</p><strong className="detail-price">{formatPrice(selectedProduct.price)} ل.س</strong><button className="secondary-submit" aria-pressed={favoriteIds.includes(selectedProduct.id)} onClick={() => toggleFavorite(selectedProduct.id)}>{favoriteIds.includes(selectedProduct.id) ? 'إزالة من المحفوظات' : 'حفظ في المحفوظات على هذا الجهاز'}</button><button className="form-submit" onClick={() => { addToCart(selectedProduct); setSelectedProduct(null) }}>أضف إلى السلة</button>
       </section></div>}
 
-      {authOpen && <AuthDialog onClose={() => setAuthOpen(false)} />}
+      {authOpen && <AuthDialog onClose={() => setAuthOpen(false)} onAuthenticated={() => { setAuthOpen(false); notify('تم تسجيل الدخول. افتح «حسابي» لمتابعة طلباتك وإعداداتك.') }} />}
       {accountOpen && session && <AccountCenter session={session} roles={roles} onClose={() => setAccountOpen(false)} notify={notify} />}
       {passwordRecovery && <PasswordRecoveryDialog onClose={clearPasswordRecovery} />}
       {checkoutOpen && <CheckoutDialog

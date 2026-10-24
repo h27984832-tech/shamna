@@ -20,8 +20,12 @@ export function useAuth() {
     let alive = true
     let activeUserId: string | null = null
     const refreshRoles = async (userId: string) => {
-      const { data } = await supabase!.from('user_roles').select('role').eq('user_id', userId)
-      if (alive) setRoles((data ?? []).map((row) => row.role as AppRole))
+      try {
+        const { data, error } = await supabase!.from('user_roles').select('role').eq('user_id', userId)
+        if (alive && activeUserId === userId) setRoles(error ? [] : (data ?? []).map((row) => row.role as AppRole))
+      } catch {
+        if (alive && activeUserId === userId) setRoles([])
+      }
     }
     const refreshCurrentUserRoles = () => {
       if (activeUserId) void refreshRoles(activeUserId)
@@ -34,6 +38,12 @@ export function useAuth() {
       setSession(data.session)
       if (activeUserId) await refreshRoles(activeUserId)
       if (alive) setLoading(false)
+    }).catch(() => {
+      if (!alive) return
+      activeUserId = null
+      setSession(null)
+      setRoles([])
+      setLoading(false)
     })
 
     const { data: authListener } = supabase.auth.onAuthStateChange((event, nextSession) => {
@@ -43,10 +53,14 @@ export function useAuth() {
       if (event === 'SIGNED_OUT') setPasswordRecovery(false)
       setRoles([])
       if (activeUserId) {
+        setLoading(true)
         const userId = activeUserId
-        window.setTimeout(() => { void refreshRoles(userId) }, 0)
+        window.setTimeout(() => {
+          void refreshRoles(userId).finally(() => { if (alive) setLoading(false) })
+        }, 0)
+      } else {
+        setLoading(false)
       }
-      setLoading(false)
     })
 
     return () => {

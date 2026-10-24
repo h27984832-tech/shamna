@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
 import type { AuthSession as Session } from '@supabase/supabase-js'
 import type { Product } from '../lib/models'
+import { summarizeDelivery } from '../lib/marketplace'
+import { userFacingError } from '../lib/user-facing-error'
 import { supabase } from '../lib/supabase'
 
 type CheckoutDialogProps = {
@@ -14,6 +16,8 @@ type CheckoutDialogProps = {
 
 type CityOption = { id: string; name: string }
 type SavedAddress = { id: string; city_id: string; recipient_name: string; phone: string; address_line: string; delivery_notes: string }
+type DeliveryQuote = { key: string; status: 'loading' | 'ready' | 'unsupported' | 'error'; fee: number }
+type DeliveryZone = { store_id: string; fee_syp: number }
 
 export function CheckoutDialog({ session, cart, onClose, onRequireAuth, onCompleted }: CheckoutDialogProps) {
   const [cities, setCities] = useState<CityOption[]>([])
@@ -26,9 +30,19 @@ export function CheckoutDialog({ session, cart, onClose, onRequireAuth, onComple
   const [deliveryNotes, setDeliveryNotes] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [deliveryQuote, setDeliveryQuote] = useState<DeliveryQuote>({ key: '', status: 'loading', fee: 0 })
 
   const subtotal = useMemo(() => cart.reduce((sum, product) => sum + product.price, 0), [cart])
   const selectedAddress = savedAddresses.find((address) => address.id === addressId)
+  const deliveryCityId = selectedAddress?.city_id ?? cityId
+  const deliveryStoreKey = cart.length > 0 && cart.every((product) => Boolean(product.storeId))
+    ? [...new Set(cart.map((product) => product.storeId!))].sort().join(',')
+    : ''
+  const deliveryQuoteKey = `${deliveryCityId}:${deliveryStoreKey}`
+  const quoteIsCurrent = deliveryQuote.key === deliveryQuoteKey
+  const deliveryQuoteReady = quoteIsCurrent && deliveryQuote.status === 'ready'
+  const deliveryQuoteUnsupported = quoteIsCurrent && deliveryQuote.status === 'unsupported'
+  const deliveryQuoteLoading = !quoteIsCurrent || deliveryQuote.status === 'loading'
   const sessionUserId = session?.user.id
 
   useEffect(() => {
@@ -55,6 +69,40 @@ export function CheckoutDialog({ session, cart, onClose, onRequireAuth, onComple
     return () => { active = false }
   }, [sessionUserId])
 
+  useEffect(() => {
+    if (!supabase || !deliveryCityId || !deliveryStoreKey) return
+    let active = true
+    const storeIds = deliveryStoreKey.split(',')
+    const timer = window.setTimeout(() => {
+      setDeliveryQuote({ key: deliveryQuoteKey, status: 'loading', fee: 0 })
+      void Promise.resolve(supabase!.from('store_delivery_zones')
+        .select('store_id,fee_syp')
+        .eq('city_id', deliveryCityId)
+        .eq('is_active', true)
+        .in('store_id', storeIds))
+        .then(({ data, error: quoteError }) => {
+          if (!active) return
+          if (quoteError) {
+            setDeliveryQuote({ key: deliveryQuoteKey, status: 'error', fee: 0 })
+            return
+          }
+          const quote = summarizeDelivery(storeIds, (data ?? []) as DeliveryZone[])
+          setDeliveryQuote({
+            key: deliveryQuoteKey,
+            status: quote.supported ? 'ready' : 'unsupported',
+            fee: quote.fee,
+          })
+        })
+        .catch(() => {
+          if (active) setDeliveryQuote({ key: deliveryQuoteKey, status: 'error', fee: 0 })
+        })
+    }, 0)
+    return () => {
+      active = false
+      window.clearTimeout(timer)
+    }
+  }, [deliveryCityId, deliveryQuoteKey, deliveryStoreKey])
+
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     setError('')
@@ -64,6 +112,12 @@ export function CheckoutDialog({ session, cart, onClose, onRequireAuth, onComple
     }
     if (cart.some((product) => product.isDemo || !product.id)) {
       setError('السلة تحتوي أمثلة تجريبية. الطلب متاح بعد ربط المنتجات الحقيقية.')
+      return
+    }
+    if (!deliveryQuoteReady) {
+      setError(deliveryQuoteUnsupported
+        ? 'لا توصيل إلى المنطقة المختارة من متجر واحد أو أكثر. اختر منطقة أخرى أو عدّل السلة.'
+        : 'انتظر احتساب رسوم التوصيل ثم حاول تأكيد الطلب مجددًا.')
       return
     }
 
@@ -97,7 +151,7 @@ export function CheckoutDialog({ session, cart, onClose, onRequireAuth, onComple
       if (orderError) throw orderError
       onCompleted()
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'تعذر إنشاء الطلب. تحقق من توفر التوصيل وحاول مجدداً.')
+      setError(userFacingError(cause, 'تعذر إنشاء الطلب. تحقق من توفر التوصيل والمخزون وحاول مجددًا.'))
     } finally {
       setBusy(false)
     }
@@ -121,9 +175,16 @@ export function CheckoutDialog({ session, cart, onClose, onRequireAuth, onComple
             <label>العنوان بالتفصيل<input required minLength={3} maxLength={500} value={addressLine} onChange={(event) => setAddressLine(event.target.value)} autoComplete="street-address" /></label>
             <label>ملاحظات للتوصيل <small>(اختياري)</small><textarea maxLength={1000} value={deliveryNotes} onChange={(event) => setDeliveryNotes(event.target.value)} /></label>
           </>}
-          <div className="checkout-summary"><span>المجموع قبل التوصيل</span><b>{new Intl.NumberFormat('ar-SY').format(subtotal)} ل.س</b><small>يُعاد التحقق من الأسعار والمخزون والتوصيل داخل قاعدة البيانات عند الإرسال.</small></div>
+          <div className="checkout-summary">
+            <span>المجموع قبل التوصيل</span><b>{new Intl.NumberFormat('ar-SY').format(subtotal)} ل.س</b>
+            <span>رسوم التوصيل</span><b>{deliveryQuoteLoading ? 'جارٍ الحساب…' : deliveryQuoteReady ? `${new Intl.NumberFormat('ar-SY').format(deliveryQuote.fee)} ل.س` : 'غير متاح'}</b>
+            {deliveryQuoteReady && <><span>الإجمالي التقديري</span><b>{new Intl.NumberFormat('ar-SY').format(subtotal + deliveryQuote.fee)} ل.س</b></>}
+            <small>هذا تقدير قبل التأكيد؛ تعيد قاعدة البيانات التحقق من الأسعار والمخزون والتوصيل لحظة إرسال الطلب.</small>
+          </div>
+          {deliveryQuoteUnsupported && <p className="form-error" role="status">متجر واحد أو أكثر لا يوصل إلى المنطقة المختارة. اختر منطقة أخرى أو أزل منتجاته من السلة.</p>}
+          {quoteIsCurrent && deliveryQuote.status === 'error' && <p className="form-error" role="alert">تعذر حساب رسوم التوصيل. تحقق من الاتصال ثم أعد فتح نافذة الطلب.</p>}
           {error && <p className="form-error" role="alert">{error}</p>}
-          <button className="form-submit" disabled={busy || (addressId === 'new' && !cityId) || cart.length === 0}>{busy ? 'جارٍ تأكيد الطلب…' : 'تأكيد الطلب عند الاستلام'}</button>
+          <button className="form-submit" disabled={busy || !cityId || !deliveryQuoteReady || cart.length === 0}>{busy ? 'جارٍ تأكيد الطلب…' : 'تأكيد الطلب عند الاستلام'}</button>
         </form>}
       </section>
     </div>

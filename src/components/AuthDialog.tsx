@@ -2,7 +2,7 @@ import { useState } from 'react'
 import type { FormEvent } from 'react'
 import { supabase } from '../lib/supabase'
 
-type AuthDialogProps = { onClose: () => void }
+type AuthDialogProps = { onClose: () => void; onAuthenticated: () => void }
 
 function authErrorMessage(cause: unknown) {
   const error = cause as { code?: string; message?: string }
@@ -29,7 +29,7 @@ function authErrorMessage(cause: unknown) {
   return 'تعذر إكمال العملية. تحقق من البيانات وحاول لاحقًا.'
 }
 
-export function AuthDialog({ onClose }: AuthDialogProps) {
+export function AuthDialog({ onClose, onAuthenticated }: AuthDialogProps) {
   const [mode, setMode] = useState<'signin' | 'signup' | 'recover'>('signin')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -58,6 +58,7 @@ export function AuthDialog({ onClose }: AuthDialogProps) {
         const { error: authError } = await supabase.auth.signInWithPassword({ email: email.trim(), password })
         if (authError) throw authError
         setMessage('أهلاً بعودتك إلى شامنا.')
+        onAuthenticated()
       } else {
         const { data, error: authError } = await supabase.auth.signUp({
           email: email.trim(),
@@ -71,6 +72,7 @@ export function AuthDialog({ onClose }: AuthDialogProps) {
           setError('قد يكون لهذا البريد حساب مسبقًا. جرّب تسجيل الدخول بدل إنشاء حساب جديد.')
         } else if (data.session) {
           setMessage('تم إنشاء الحساب وتسجيل الدخول.')
+          onAuthenticated()
         } else {
           setMessage('استُقبل طلب إنشاء الحساب. إذا كان تأكيد البريد مفعّلًا، استخدم الرسالة الموجودة في بريدك ثم سجّل الدخول. لم نطلب رسالة أخرى.')
         }
