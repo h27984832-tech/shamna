@@ -14,7 +14,15 @@ type AccountCenterProps = {
 type City = { id: string; name: string; is_active: boolean }
 type Category = { id: string; name: string; is_active: boolean }
 type Store = { id: string; name: string; slug: string; status: StoreStatus; city_id: string }
-type OwnedProduct = { id: string; name: string; price_syp: number; stock_count: number; is_active: boolean }
+type OwnedProduct = {
+  id: string
+  name: string
+  description: string
+  category_id: string | null
+  price_syp: number
+  stock_count: number
+  is_active: boolean
+}
 type SellerOrder = { id: string; status: MarketplaceOrderStatus; total_syp: number; created_at: string; order_items?: { product_name_snapshot: string; quantity: number }[] }
 type CustomerOrder = { id: string; status: MarketplaceOrderStatus; total_syp: number; created_at: string }
 type Relation<T> = T | T[] | null
@@ -63,6 +71,7 @@ export function AccountCenter({ session, roles, onClose, notify }: AccountCenter
   const [productStock, setProductStock] = useState('')
   const [productCategory, setProductCategory] = useState('')
   const [productImage, setProductImage] = useState<File | null>(null)
+  const [editingProductId, setEditingProductId] = useState<string | null>(null)
   const [zoneCity, setZoneCity] = useState('')
   const [zoneFee, setZoneFee] = useState('')
   const [newCityName, setNewCityName] = useState('')
@@ -100,7 +109,7 @@ export function AccountCenter({ session, roles, onClose, notify }: AccountCenter
 
     if (ownStore && isSeller) {
       const [productsResult, ordersResult] = await Promise.all([
-        supabase.from('products').select('id,name,price_syp,stock_count,is_active').eq('store_id', ownStore.id).order('created_at', { ascending: false }),
+        supabase.from('products').select('id,name,description,category_id,price_syp,stock_count,is_active').eq('store_id', ownStore.id).order('created_at', { ascending: false }),
         supabase.from('store_orders').select('id,status,total_syp,created_at,order_items(product_name_snapshot,quantity)').eq('store_id', ownStore.id).order('created_at', { ascending: false }).limit(30),
       ])
       if (productsResult.error) setError(productsResult.error.message)
@@ -188,43 +197,98 @@ export function AccountCenter({ session, roles, onClose, notify }: AccountCenter
       return
     }
     void perform(async () => {
-      const { data: created, error: insertError } = await supabase!.from('products').insert({
-        store_id: store.id,
+      const productValues = {
         category_id: productCategory || null,
         name: productName.trim(),
         description: productDescription.trim(),
         price_syp: Number(productPrice),
         stock_count: Number(productStock),
-        is_active: false,
-      }).select('id').single()
-      if (insertError) throw insertError
+      }
+      let productId: string
+      if (editingProductId) {
+        productId = editingProductId
+        const { data: updated, error: updateError } = await supabase!.from('products')
+          .update(productValues)
+          .eq('id', editingProductId)
+          .eq('store_id', store.id)
+          .select('id')
+          .maybeSingle()
+        if (updateError) throw updateError
+        if (!updated) throw new Error('لم يتم تعديل المنتج. تحقق من صلاحية متجرك ثم أعد المحاولة.')
+      } else {
+        const { data: created, error: insertError } = await supabase!.from('products').insert({
+          store_id: store.id,
+          ...productValues,
+          is_active: false,
+        }).select('id').single()
+        if (insertError) throw insertError
+        productId = created.id
+      }
       if (productImage) {
-        const path = `${store.id}/${created.id}/${crypto.randomUUID()}.${validImageTypes[productImage.type]}`
+        const path = `${store.id}/${productId}/${crypto.randomUUID()}.${validImageTypes[productImage.type]}`
         const { error: uploadError } = await supabase!.storage.from('product-images').upload(path, productImage, {
           contentType: productImage.type,
           upsert: false,
         })
         if (uploadError) {
-          await supabase!.from('products').delete().eq('id', created.id)
+          if (!editingProductId) await supabase!.from('products').delete().eq('id', productId)
           throw uploadError
         }
-        const { error: imageError } = await supabase!.from('product_images').insert({
-          product_id: created.id,
-          storage_path: path,
-          alt_text: productName.trim(),
-        })
+        let previousImage: { id: string; storage_path: string } | null = null
+        if (editingProductId) {
+          const { data: image, error: findImageError } = await supabase!.from('product_images')
+            .select('id,storage_path')
+            .eq('product_id', productId)
+            .order('sort_order')
+            .limit(1)
+            .maybeSingle()
+          if (findImageError) {
+            await supabase!.storage.from('product-images').remove([path])
+            throw findImageError
+          }
+          previousImage = image
+        }
+        const imageMutation = previousImage
+          ? await supabase!.from('product_images').update({ storage_path: path, alt_text: productName.trim() }).eq('id', previousImage.id).eq('product_id', productId)
+          : await supabase!.from('product_images').insert({ product_id: productId, storage_path: path, alt_text: productName.trim() })
+        const imageError = imageMutation.error
         if (imageError) {
           await supabase!.storage.from('product-images').remove([path])
-          await supabase!.from('products').delete().eq('id', created.id)
+          if (!editingProductId) await supabase!.from('products').delete().eq('id', productId)
           throw imageError
         }
+        if (previousImage) await supabase!.storage.from('product-images').remove([previousImage.storage_path])
       }
       setProductName('')
       setProductDescription('')
       setProductPrice('')
       setProductStock('')
+      setProductCategory('')
       setProductImage(null)
-    }, 'تمت إضافة المنتج كمسودة. فعّله بعد مراجعته.')
+      setEditingProductId(null)
+    }, editingProductId ? 'تم حفظ تعديلات المنتج.' : 'تمت إضافة المنتج كمسودة. فعّله بعد مراجعته.')
+  }
+
+  const editProduct = (product: OwnedProduct) => {
+    setEditingProductId(product.id)
+    setProductName(product.name)
+    setProductDescription(product.description)
+    setProductPrice(String(product.price_syp))
+    setProductStock(String(product.stock_count))
+    setProductCategory(product.category_id ?? '')
+    setProductImage(null)
+    setError('')
+  }
+
+  const cancelProductEdit = () => {
+    setEditingProductId(null)
+    setProductName('')
+    setProductDescription('')
+    setProductPrice('')
+    setProductStock('')
+    setProductCategory('')
+    setProductImage(null)
+    setError('')
   }
 
   const saveDeliveryZone = (event: FormEvent<HTMLFormElement>) => {
@@ -345,16 +409,16 @@ export function AccountCenter({ session, roles, onClose, notify }: AccountCenter
               </form>
             </section>
             <section className="account-section">
-              <h3>إضافة منتج</h3>
+              <h3>{editingProductId ? 'تعديل المنتج' : 'إضافة منتج'}</h3>
               <form className="form-stack" onSubmit={addProduct}>
                 <label>اسم المنتج<input required minLength={2} maxLength={160} value={productName} onChange={(event) => setProductName(event.target.value)} /></label>
                 <label>الفئة<select value={productCategory} onChange={(event) => setProductCategory(event.target.value)}><option value="">بدون فئة</option>{categories.filter((item) => item.is_active).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
                 <label>الوصف<textarea maxLength={5000} value={productDescription} onChange={(event) => setProductDescription(event.target.value)} /></label>
                 <div className="inline-form"><label>السعر بالليرة<input required type="number" min="1" step="1" inputMode="numeric" value={productPrice} onChange={(event) => setProductPrice(event.target.value)} /></label><label>الكمية<input required type="number" min="0" step="1" inputMode="numeric" value={productStock} onChange={(event) => setProductStock(event.target.value)} /></label></div>
-                <label>صورة المنتج <small>(JPG أو PNG أو WebP، حتى 5 ميغابايت)</small><input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => setProductImage(event.target.files?.[0] ?? null)} /></label>
-                <button className="form-submit" disabled={busy}>حفظ كمسودة</button>
+                <label>صورة المنتج <small>(JPG أو PNG أو WebP، حتى 5 ميغابايت){editingProductId ? '؛ اتركها فارغة للإبقاء على الصورة الحالية' : ''}</small><input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => setProductImage(event.target.files?.[0] ?? null)} /></label>
+                <div className="inline-form"><button className="form-submit" disabled={busy}>{editingProductId ? 'حفظ التعديلات' : 'حفظ كمسودة'}</button>{editingProductId && <button className="secondary-submit" type="button" disabled={busy} onClick={cancelProductEdit}>إلغاء التعديل</button>}</div>
               </form>
-              <div className="managed-list">{products.map((product) => <div className="managed-row" key={product.id}><span>{product.name}<small>{formatPrice(product.price_syp)} · المخزون {product.stock_count}</small></span><button className="text-button" onClick={() => void perform(async () => {
+              <div className="managed-list">{products.map((product) => <div className="managed-row" key={product.id}><span>{product.name}<small>{formatPrice(product.price_syp)} · المخزون {product.stock_count}</small></span><button className="text-button" disabled={busy} onClick={() => editProduct(product)}>تعديل</button><button className="text-button" disabled={busy} onClick={() => void perform(async () => {
                 const { error: updateError } = await supabase!.from('products').update({ is_active: !product.is_active }).eq('id', product.id)
                 if (updateError) throw updateError
               }, product.is_active ? 'تم إيقاف المنتج.' : 'تم تفعيل المنتج.')}>{product.is_active ? 'إيقاف' : 'تفعيل'}</button><button className="danger-button" onClick={() => void perform(async () => {
