@@ -17,6 +17,15 @@ export type Product = {
   isDemo?: boolean
 }
 
+export type MarketplaceStore = {
+  id: string
+  name: string
+  description: string
+  area: string
+  productCount: number
+  isDemo?: boolean
+}
+
 export type AppRole = 'customer' | 'seller' | 'admin'
 
 export type StoreStatus = 'pending' | 'active' | 'rejected' | 'suspended'
