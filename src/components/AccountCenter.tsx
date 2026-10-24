@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
-import type { Session } from '@supabase/supabase-js'
+import type { AuthSession as Session } from '@supabase/supabase-js'
 import type { AppRole, MarketplaceOrderStatus, StoreStatus } from '../lib/models'
+import { userFacingError } from '../lib/user-facing-error'
 import { supabase } from '../lib/supabase'
 
 type AccountCenterProps = {
@@ -11,15 +12,29 @@ type AccountCenterProps = {
   notify: (message: string) => void
 }
 
-type City = { id: string; name: string }
-type Category = { id: string; name: string }
+type City = { id: string; name: string; is_active: boolean }
+type Category = { id: string; name: string; is_active: boolean }
 type Store = { id: string; name: string; slug: string; status: StoreStatus; city_id: string }
-type OwnedProduct = { id: string; name: string; price_syp: number; stock_count: number; is_active: boolean }
+type OwnedProduct = {
+  id: string
+  name: string
+  description: string
+  category_id: string | null
+  price_syp: number
+  stock_count: number
+  is_active: boolean
+}
 type SellerOrder = { id: string; status: MarketplaceOrderStatus; total_syp: number; created_at: string; order_items?: { product_name_snapshot: string; quantity: number }[] }
 type CustomerOrder = { id: string; status: MarketplaceOrderStatus; total_syp: number; created_at: string }
-type PendingStore = { id: string; name: string; owner_id: string; city_id: string; cities?: { name: string } | null }
-type AdminProduct = { id: string; name: string; price_syp: number; stock_count: number; is_active: boolean; stores?: { name: string } | null }
-type AdminOrder = { id: string; status: MarketplaceOrderStatus; total_syp: number; created_at: string; store_orders?: { id: string; status: MarketplaceOrderStatus; stores?: { name: string } | null }[] }
+type Relation<T> = T | T[] | null
+type PendingStore = { id: string; name: string; owner_id: string; city_id: string; cities?: Relation<{ name: string }> }
+type AdminProduct = { id: string; name: string; price_syp: number; stock_count: number; is_active: boolean; stores?: Relation<{ name: string }> }
+type AdminOrder = { id: string; status: MarketplaceOrderStatus; total_syp: number; created_at: string; store_orders?: { id: string; status: MarketplaceOrderStatus; stores?: Relation<{ name: string }> }[] }
+type AuditEvent = { id: string; action: 'INSERT' | 'UPDATE' | 'DELETE'; entity_table: string; entity_id: string | null; created_at: string }
+
+function relatedRecord<T>(relation: Relation<T> | undefined): T | undefined {
+  return Array.isArray(relation) ? relation[0] : relation ?? undefined
+}
 
 const statusLabels: Record<MarketplaceOrderStatus, string> = {
   new: 'جديد', confirmed: 'تم التأكيد', preparing: 'قيد التجهيز',
@@ -45,6 +60,7 @@ export function AccountCenter({ session, roles, onClose, notify }: AccountCenter
   const [pendingStores, setPendingStores] = useState<PendingStore[]>([])
   const [adminProducts, setAdminProducts] = useState<AdminProduct[]>([])
   const [adminOrders, setAdminOrders] = useState<AdminOrder[]>([])
+  const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([])
   const [displayName, setDisplayName] = useState('')
   const [phone, setPhone] = useState('')
   const [storeName, setStoreName] = useState('')
@@ -56,8 +72,12 @@ export function AccountCenter({ session, roles, onClose, notify }: AccountCenter
   const [productStock, setProductStock] = useState('')
   const [productCategory, setProductCategory] = useState('')
   const [productImage, setProductImage] = useState<File | null>(null)
+  const [editingProductId, setEditingProductId] = useState<string | null>(null)
   const [zoneCity, setZoneCity] = useState('')
   const [zoneFee, setZoneFee] = useState('')
+  const [newCityName, setNewCityName] = useState('')
+  const [newCityRegion, setNewCityRegion] = useState('ريف دمشق')
+  const [newCategoryName, setNewCategoryName] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
 
@@ -68,18 +88,20 @@ export function AccountCenter({ session, roles, onClose, notify }: AccountCenter
     if (!supabase) return
     const [storeResult, citiesResult, categoriesResult, profileResult, customerOrdersResult] = await Promise.all([
       supabase.from('stores').select('id,name,slug,status,city_id').eq('owner_id', session.user.id).maybeSingle(),
-      supabase.from('cities').select('id,name').eq('is_active', true).order('name'),
-      supabase.from('categories').select('id,name').eq('is_active', true).order('sort_order'),
+      supabase.from('cities').select('id,name,is_active').order('name'),
+      supabase.from('categories').select('id,name,is_active').order('sort_order'),
       supabase.from('profiles').select('display_name,phone').eq('id', session.user.id).maybeSingle(),
       supabase.from('orders').select('id,status,total_syp,created_at').eq('customer_id', session.user.id).order('created_at', { ascending: false }).limit(20),
     ])
 
-    if (storeResult.error && storeResult.error.code !== 'PGRST116') setError(storeResult.error.message)
+    if (storeResult.error && storeResult.error.code !== 'PGRST116') setError(userFacingError(storeResult.error, 'تعذر تحميل بيانات المتجر.'))
     const ownStore = storeResult.data as Store | null
     setStore(ownStore)
-    const availableCities = (citiesResult.data ?? []) as City[]
+    const allCities = (citiesResult.data ?? []) as City[]
+    const availableCities = isAdmin ? allCities : allCities.filter((city) => city.is_active)
     setCities(availableCities)
-    setCategories((categoriesResult.data ?? []) as Category[])
+    const allCategories = (categoriesResult.data ?? []) as Category[]
+    setCategories(isAdmin ? allCategories : allCategories.filter((item) => item.is_active))
     setDisplayName(profileResult.data?.display_name ?? '')
     setPhone(profileResult.data?.phone ?? '')
     setCustomerOrders((customerOrdersResult.data ?? []) as CustomerOrder[])
@@ -88,31 +110,37 @@ export function AccountCenter({ session, roles, onClose, notify }: AccountCenter
 
     if (ownStore && isSeller) {
       const [productsResult, ordersResult] = await Promise.all([
-        supabase.from('products').select('id,name,price_syp,stock_count,is_active').eq('store_id', ownStore.id).order('created_at', { ascending: false }),
+        supabase.from('products').select('id,name,description,category_id,price_syp,stock_count,is_active').eq('store_id', ownStore.id).order('created_at', { ascending: false }),
         supabase.from('store_orders').select('id,status,total_syp,created_at,order_items(product_name_snapshot,quantity)').eq('store_id', ownStore.id).order('created_at', { ascending: false }).limit(30),
       ])
-      if (productsResult.error) setError(productsResult.error.message)
-      if (ordersResult.error) setError(ordersResult.error.message)
+      if (productsResult.error) setError(userFacingError(productsResult.error, 'تعذر تحميل منتجات المتجر.'))
+      if (ordersResult.error) setError(userFacingError(ordersResult.error, 'تعذر تحميل طلبات المتجر.'))
       setProducts((productsResult.data ?? []) as OwnedProduct[])
       setSellerOrders((ordersResult.data ?? []) as SellerOrder[])
     }
 
     if (isAdmin) {
-      const [pendingResult, productsResult, ordersResult] = await Promise.all([
+      const [pendingResult, productsResult, ordersResult, auditResult] = await Promise.all([
         supabase.from('stores').select('id,name,owner_id,city_id,cities(name)').eq('status', 'pending').order('created_at'),
         supabase.from('products').select('id,name,price_syp,stock_count,is_active,stores(name)').order('created_at', { ascending: false }).limit(100),
         supabase.from('orders').select('id,status,total_syp,created_at,store_orders(id,status,stores(name))').order('created_at', { ascending: false }).limit(100),
+        supabase.from('admin_audit_log').select('id,action,entity_table,entity_id,created_at').order('created_at', { ascending: false }).limit(30),
       ])
-      if (pendingResult.error) setError(pendingResult.error.message)
-      if (productsResult.error) setError(productsResult.error.message)
-      if (ordersResult.error) setError(ordersResult.error.message)
+      if (pendingResult.error) setError(userFacingError(pendingResult.error, 'تعذر تحميل طلبات المتاجر.'))
+      if (productsResult.error) setError(userFacingError(productsResult.error, 'تعذر تحميل المنتجات.'))
+      if (ordersResult.error) setError(userFacingError(ordersResult.error, 'تعذر تحميل الطلبات.'))
+      if (auditResult.error) setError('تعذر تحميل سجل التدقيق. تحقق من سياسة قراءة سجل الإدارة.')
       setPendingStores((pendingResult.data ?? []) as PendingStore[])
       setAdminProducts((productsResult.data ?? []) as AdminProduct[])
       setAdminOrders((ordersResult.data ?? []) as AdminOrder[])
+      setAuditEvents((auditResult.data ?? []) as AuditEvent[])
     }
   }, [cityId, isAdmin, isSeller, session.user.id, zoneCity])
 
-  useEffect(() => { void reload() }, [reload])
+  useEffect(() => {
+    const timer = window.setTimeout(() => { void reload() }, 0)
+    return () => window.clearTimeout(timer)
+  }, [reload])
 
   const perform = async (action: () => Promise<void>, successMessage: string) => {
     if (!supabase) return
@@ -123,7 +151,7 @@ export function AccountCenter({ session, roles, onClose, notify }: AccountCenter
       await reload()
       notify(successMessage)
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'تعذر إكمال العملية.')
+      setError(userFacingError(cause, 'تعذر إكمال العملية. تحقق من الاتصال وصلاحية الحساب ثم حاول مجددًا.'))
     } finally {
       setBusy(false)
     }
@@ -170,43 +198,98 @@ export function AccountCenter({ session, roles, onClose, notify }: AccountCenter
       return
     }
     void perform(async () => {
-      const { data: created, error: insertError } = await supabase!.from('products').insert({
-        store_id: store.id,
+      const productValues = {
         category_id: productCategory || null,
         name: productName.trim(),
         description: productDescription.trim(),
         price_syp: Number(productPrice),
         stock_count: Number(productStock),
-        is_active: false,
-      }).select('id').single()
-      if (insertError) throw insertError
+      }
+      let productId: string
+      if (editingProductId) {
+        productId = editingProductId
+        const { data: updated, error: updateError } = await supabase!.from('products')
+          .update(productValues)
+          .eq('id', editingProductId)
+          .eq('store_id', store.id)
+          .select('id')
+          .maybeSingle()
+        if (updateError) throw updateError
+        if (!updated) throw new Error('لم يتم تعديل المنتج. تحقق من صلاحية متجرك ثم أعد المحاولة.')
+      } else {
+        const { data: created, error: insertError } = await supabase!.from('products').insert({
+          store_id: store.id,
+          ...productValues,
+          is_active: false,
+        }).select('id').single()
+        if (insertError) throw insertError
+        productId = created.id
+      }
       if (productImage) {
-        const path = `${store.id}/${created.id}/${crypto.randomUUID()}.${validImageTypes[productImage.type]}`
+        const path = `${store.id}/${productId}/${crypto.randomUUID()}.${validImageTypes[productImage.type]}`
         const { error: uploadError } = await supabase!.storage.from('product-images').upload(path, productImage, {
           contentType: productImage.type,
           upsert: false,
         })
         if (uploadError) {
-          await supabase!.from('products').delete().eq('id', created.id)
+          if (!editingProductId) await supabase!.from('products').delete().eq('id', productId)
           throw uploadError
         }
-        const { error: imageError } = await supabase!.from('product_images').insert({
-          product_id: created.id,
-          storage_path: path,
-          alt_text: productName.trim(),
-        })
+        let previousImage: { id: string; storage_path: string } | null = null
+        if (editingProductId) {
+          const { data: image, error: findImageError } = await supabase!.from('product_images')
+            .select('id,storage_path')
+            .eq('product_id', productId)
+            .order('sort_order')
+            .limit(1)
+            .maybeSingle()
+          if (findImageError) {
+            await supabase!.storage.from('product-images').remove([path])
+            throw findImageError
+          }
+          previousImage = image
+        }
+        const imageMutation = previousImage
+          ? await supabase!.from('product_images').update({ storage_path: path, alt_text: productName.trim() }).eq('id', previousImage.id).eq('product_id', productId)
+          : await supabase!.from('product_images').insert({ product_id: productId, storage_path: path, alt_text: productName.trim() })
+        const imageError = imageMutation.error
         if (imageError) {
           await supabase!.storage.from('product-images').remove([path])
-          await supabase!.from('products').delete().eq('id', created.id)
+          if (!editingProductId) await supabase!.from('products').delete().eq('id', productId)
           throw imageError
         }
+        if (previousImage) await supabase!.storage.from('product-images').remove([previousImage.storage_path])
       }
       setProductName('')
       setProductDescription('')
       setProductPrice('')
       setProductStock('')
+      setProductCategory('')
       setProductImage(null)
-    }, 'تمت إضافة المنتج كمسودة. فعّله بعد مراجعته.')
+      setEditingProductId(null)
+    }, editingProductId ? 'تم حفظ تعديلات المنتج.' : 'تمت إضافة المنتج كمسودة. فعّله بعد مراجعته.')
+  }
+
+  const editProduct = (product: OwnedProduct) => {
+    setEditingProductId(product.id)
+    setProductName(product.name)
+    setProductDescription(product.description)
+    setProductPrice(String(product.price_syp))
+    setProductStock(String(product.stock_count))
+    setProductCategory(product.category_id ?? '')
+    setProductImage(null)
+    setError('')
+  }
+
+  const cancelProductEdit = () => {
+    setEditingProductId(null)
+    setProductName('')
+    setProductDescription('')
+    setProductPrice('')
+    setProductStock('')
+    setProductCategory('')
+    setProductImage(null)
+    setError('')
   }
 
   const saveDeliveryZone = (event: FormEvent<HTMLFormElement>) => {
@@ -237,9 +320,52 @@ export function AccountCenter({ session, roles, onClose, notify }: AccountCenter
     }, 'تم تفعيل المتجر ومنح صاحبه دور البائع.')
   }
 
+  const addCity = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const name = newCityName.trim()
+    if (!name) return
+    void perform(async () => {
+      const { error: insertError } = await supabase!.from('cities').insert({
+        name,
+        slug: `city-${crypto.randomUUID().slice(0, 8)}`,
+        region_name: newCityRegion.trim(),
+      })
+      if (insertError) throw insertError
+      setNewCityName('')
+    }, 'تمت إضافة المنطقة.')
+  }
+
+  const addCategory = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const name = newCategoryName.trim()
+    if (!name) return
+    void perform(async () => {
+      const { error: insertError } = await supabase!.from('categories').insert({
+        name,
+        slug: `category-${crypto.randomUUID().slice(0, 8)}`,
+      })
+      if (insertError) throw insertError
+      setNewCategoryName('')
+    }, 'تمت إضافة الفئة.')
+  }
+
+  const setCityActive = (city: City) => {
+    void perform(async () => {
+      const { error: updateError } = await supabase!.from('cities').update({ is_active: !city.is_active }).eq('id', city.id)
+      if (updateError) throw updateError
+    }, city.is_active ? 'تم إيقاف المنطقة عن العرض.' : 'تم تفعيل المنطقة.')
+  }
+
+  const setCategoryActive = (category: Category) => {
+    void perform(async () => {
+      const { error: updateError } = await supabase!.from('categories').update({ is_active: !category.is_active }).eq('id', category.id)
+      if (updateError) throw updateError
+    }, category.is_active ? 'تم إيقاف الفئة عن العرض.' : 'تم تفعيل الفئة.')
+  }
+
   const signOut = async () => {
     const { error: signOutError } = await supabase!.auth.signOut()
-    if (signOutError) setError(signOutError.message)
+    if (signOutError) setError(userFacingError(signOutError, 'تعذر تسجيل الخروج. حاول مجددًا.'))
     else onClose()
   }
 
@@ -264,7 +390,7 @@ export function AccountCenter({ session, roles, onClose, notify }: AccountCenter
             <p className="muted-copy">قدّم طلباً لمراجعته. لن يتم تفعيل المتجر أو صلاحية البائع تلقائياً.</p>
             <form className="form-stack" onSubmit={requestStore}>
               <label>اسم المتجر<input required minLength={2} maxLength={100} value={storeName} onChange={(event) => setStoreName(event.target.value)} /></label>
-              <label>منطقة المتجر<select required value={cityId} onChange={(event) => setCityId(event.target.value)}>{cities.map((city) => <option key={city.id} value={city.id}>{city.name}</option>)}</select></label>
+              <label>منطقة المتجر<select required value={cityId} onChange={(event) => setCityId(event.target.value)}>{cities.filter((city) => city.is_active).map((city) => <option key={city.id} value={city.id}>{city.name}</option>)}</select></label>
               <label>نبذة عن المتجر<textarea maxLength={2000} value={storeDescription} onChange={(event) => setStoreDescription(event.target.value)} /></label>
               <button className="form-submit" disabled={busy || cities.length === 0}>إرسال طلب مراجعة</button>
             </form>
@@ -278,22 +404,22 @@ export function AccountCenter({ session, roles, onClose, notify }: AccountCenter
               <h3>منطقة التوصيل</h3>
               <p className="muted-copy">حدد المدن ورسوم التوصيل التي يقبلها متجرك. الطلب لا يتاح لمنطقة بلا إعداد.</p>
               <form className="inline-form" onSubmit={saveDeliveryZone}>
-                <select required value={zoneCity} onChange={(event) => setZoneCity(event.target.value)}>{cities.map((city) => <option key={city.id} value={city.id}>{city.name}</option>)}</select>
+                <select required value={zoneCity} onChange={(event) => setZoneCity(event.target.value)}>{cities.filter((city) => city.is_active).map((city) => <option key={city.id} value={city.id}>{city.name}</option>)}</select>
                 <input required type="number" min="0" step="1" inputMode="numeric" placeholder="رسم التوصيل ل.س" value={zoneFee} onChange={(event) => setZoneFee(event.target.value)} />
                 <button className="secondary-submit" disabled={busy}>حفظ</button>
               </form>
             </section>
             <section className="account-section">
-              <h3>إضافة منتج</h3>
+              <h3>{editingProductId ? 'تعديل المنتج' : 'إضافة منتج'}</h3>
               <form className="form-stack" onSubmit={addProduct}>
                 <label>اسم المنتج<input required minLength={2} maxLength={160} value={productName} onChange={(event) => setProductName(event.target.value)} /></label>
-                <label>الفئة<select value={productCategory} onChange={(event) => setProductCategory(event.target.value)}><option value="">بدون فئة</option>{categories.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+                <label>الفئة<select value={productCategory} onChange={(event) => setProductCategory(event.target.value)}><option value="">بدون فئة</option>{categories.filter((item) => item.is_active).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
                 <label>الوصف<textarea maxLength={5000} value={productDescription} onChange={(event) => setProductDescription(event.target.value)} /></label>
                 <div className="inline-form"><label>السعر بالليرة<input required type="number" min="1" step="1" inputMode="numeric" value={productPrice} onChange={(event) => setProductPrice(event.target.value)} /></label><label>الكمية<input required type="number" min="0" step="1" inputMode="numeric" value={productStock} onChange={(event) => setProductStock(event.target.value)} /></label></div>
-                <label>صورة المنتج <small>(JPG أو PNG أو WebP، حتى 5 ميغابايت)</small><input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => setProductImage(event.target.files?.[0] ?? null)} /></label>
-                <button className="form-submit" disabled={busy}>حفظ كمسودة</button>
+                <label>صورة المنتج <small>(JPG أو PNG أو WebP، حتى 5 ميغابايت){editingProductId ? '؛ اتركها فارغة للإبقاء على الصورة الحالية' : ''}</small><input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => setProductImage(event.target.files?.[0] ?? null)} /></label>
+                <div className="inline-form"><button className="form-submit" disabled={busy}>{editingProductId ? 'حفظ التعديلات' : 'حفظ كمسودة'}</button>{editingProductId && <button className="secondary-submit" type="button" disabled={busy} onClick={cancelProductEdit}>إلغاء التعديل</button>}</div>
               </form>
-              <div className="managed-list">{products.map((product) => <div className="managed-row" key={product.id}><span>{product.name}<small>{formatPrice(product.price_syp)} · المخزون {product.stock_count}</small></span><button className="text-button" onClick={() => void perform(async () => {
+              <div className="managed-list">{products.map((product) => <div className="managed-row" key={product.id}><span>{product.name}<small>{formatPrice(product.price_syp)} · المخزون {product.stock_count}</small></span><button className="text-button" disabled={busy} onClick={() => editProduct(product)}>تعديل</button><button className="text-button" disabled={busy} onClick={() => void perform(async () => {
                 const { error: updateError } = await supabase!.from('products').update({ is_active: !product.is_active }).eq('id', product.id)
                 if (updateError) throw updateError
               }, product.is_active ? 'تم إيقاف المنتج.' : 'تم تفعيل المنتج.')}>{product.is_active ? 'إيقاف' : 'تفعيل'}</button><button className="danger-button" onClick={() => void perform(async () => {
@@ -306,12 +432,27 @@ export function AccountCenter({ session, roles, onClose, notify }: AccountCenter
 
           {isAdmin && <section className="account-section">
             <h3>طلبات تفعيل المتاجر ({pendingStores.length})</h3>
-            {pendingStores.length ? pendingStores.map((pending) => <div className="managed-row" key={pending.id}><span>{pending.name}<small>{pending.cities?.name ?? 'منطقة غير معروفة'} · صاحب المتجر {pending.owner_id.slice(0, 8)}…</small></span><button className="secondary-submit" disabled={busy} onClick={() => approveStore(pending.id)}>موافقة وتفعيل</button></div>) : <p className="muted-copy">لا توجد طلبات معلّقة.</p>}
+            {pendingStores.length ? pendingStores.map((pending) => <div className="managed-row" key={pending.id}><span>{pending.name}<small>{relatedRecord(pending.cities)?.name ?? 'منطقة غير معروفة'} · صاحب المتجر {pending.owner_id.slice(0, 8)}…</small></span><button className="secondary-submit" disabled={busy} onClick={() => approveStore(pending.id)}>موافقة وتفعيل</button></div>) : <p className="muted-copy">لا توجد طلبات معلّقة.</p>}
+          </section>}
+
+          {isAdmin && <section className="account-section">
+            <h3>إدارة المناطق والفئات</h3>
+            <form className="inline-form" onSubmit={addCity}>
+              <label>إضافة منطقة<input required maxLength={100} value={newCityName} onChange={(event) => setNewCityName(event.target.value)} /></label>
+              <label>المحافظة<input required maxLength={100} value={newCityRegion} onChange={(event) => setNewCityRegion(event.target.value)} /></label>
+              <button className="secondary-submit" disabled={busy}>إضافة</button>
+            </form>
+            <div className="managed-list">{cities.map((city) => <div className="managed-row" key={city.id}><span>{city.name}<small>{city.is_active ? 'معروضة للزبائن' : 'متوقفة مؤقتًا'}</small></span><button className="text-button" disabled={busy} onClick={() => setCityActive(city)}>{city.is_active ? 'إيقاف العرض' : 'تفعيل'}</button></div>)}</div>
+            <form className="inline-form" onSubmit={addCategory}>
+              <label>إضافة فئة<input required maxLength={100} value={newCategoryName} onChange={(event) => setNewCategoryName(event.target.value)} /></label>
+              <button className="secondary-submit" disabled={busy}>إضافة</button>
+            </form>
+            <div className="managed-list">{categories.map((category) => <div className="managed-row" key={category.id}><span>{category.name}<small>{category.is_active ? 'معروضة للزبائن' : 'متوقفة مؤقتًا'}</small></span><button className="text-button" disabled={busy} onClick={() => setCategoryActive(category)}>{category.is_active ? 'إيقاف العرض' : 'تفعيل'}</button></div>)}</div>
           </section>}
 
           {isAdmin && <section className="account-section">
             <h3>مراجعة المنتجات ({adminProducts.length})</h3>
-            {adminProducts.length ? adminProducts.map((product) => <div className="managed-row" key={product.id}><span>{product.name}<small>{product.stores?.name ?? 'متجر غير معروف'} · {formatPrice(product.price_syp)} · مخزون {product.stock_count}</small></span><button className="text-button" disabled={busy} onClick={() => void perform(async () => {
+            {adminProducts.length ? adminProducts.map((product) => <div className="managed-row" key={product.id}><span>{product.name}<small>{relatedRecord(product.stores)?.name ?? 'متجر غير معروف'} · {formatPrice(product.price_syp)} · مخزون {product.stock_count}</small></span><button className="text-button" disabled={busy} onClick={() => void perform(async () => {
               const { error: updateError } = await supabase!.from('products').update({ is_active: !product.is_active }).eq('id', product.id)
               if (updateError) throw updateError
             }, product.is_active ? 'تم إيقاف المنتج.' : 'تم تفعيل المنتج.')}>{product.is_active ? 'إيقاف' : 'تفعيل'}</button></div>) : <p className="muted-copy">لا توجد منتجات.</p>}
@@ -319,7 +460,14 @@ export function AccountCenter({ session, roles, onClose, notify }: AccountCenter
 
           {isAdmin && <section className="account-section">
             <h3>متابعة الطلبات ({adminOrders.length})</h3>
-            {adminOrders.length ? adminOrders.map((order) => <div className="managed-row order-row" key={order.id}><span>{statusLabels[order.status]}<small>{order.id.slice(0, 8)}… · {(order.store_orders ?? []).map((storeOrder) => `${storeOrder.stores?.name ?? 'متجر'}: ${statusLabels[storeOrder.status]}`).join('، ')}</small></span><b>{formatPrice(order.total_syp)}</b><div className="status-actions">{(order.store_orders ?? []).flatMap((storeOrder) => (transitions[storeOrder.status] ?? []).map((next) => <button className="text-button" key={`${storeOrder.id}-${next}`} disabled={busy} onClick={() => changeOrderStatus(storeOrder.id, next)}>{storeOrder.stores?.name ?? 'متجر'}: {statusLabels[next]}</button>))}</div></div>) : <p className="muted-copy">لا توجد طلبات.</p>}
+            {adminOrders.length ? adminOrders.map((order) => <div className="managed-row order-row" key={order.id}><span>{statusLabels[order.status]}<small>{order.id.slice(0, 8)}… · {(order.store_orders ?? []).map((storeOrder) => `${relatedRecord(storeOrder.stores)?.name ?? 'متجر'}: ${statusLabels[storeOrder.status]}`).join('، ')}</small></span><b>{formatPrice(order.total_syp)}</b><div className="status-actions">{(order.store_orders ?? []).flatMap((storeOrder) => (transitions[storeOrder.status] ?? []).map((next) => <button className="text-button" key={`${storeOrder.id}-${next}`} disabled={busy} onClick={() => changeOrderStatus(storeOrder.id, next)}>{relatedRecord(storeOrder.stores)?.name ?? 'متجر'}: {statusLabels[next]}</button>))}</div></div>) : <p className="muted-copy">لا توجد طلبات.</p>}
+          </section>}
+
+          {isAdmin && <section className="account-section">
+            <h3>سجل التغييرات الإدارية</h3>
+            {auditEvents.length ? auditEvents.map((event) => <div className="managed-row" key={event.id}>
+              <span>{event.action === 'INSERT' ? 'إضافة' : event.action === 'UPDATE' ? 'تعديل' : 'حذف'} · {event.entity_table}<small>{event.entity_id ? `${event.entity_id.slice(0, 8)}… · ` : ''}{new Intl.DateTimeFormat('ar-SY', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(event.created_at))}</small></span>
+            </div>) : <p className="muted-copy">لا توجد تغييرات مسجلة حتى الآن.</p>}
           </section>}
 
           <section className="account-section"><h3>طلباتي</h3>{customerOrders.length ? customerOrders.map((order) => <div className="managed-row" key={order.id}><span>{statusLabels[order.status]}<small>رقم الطلب {order.id.slice(0, 8)}…</small></span><b>{formatPrice(order.total_syp)}</b></div>) : <p className="muted-copy">لا توجد طلبات بعد.</p>}</section>

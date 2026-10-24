@@ -6,6 +6,7 @@ dist/
 .DS_Store
 *.local
 .netlify/
+.remote-review/
 coverage/
 *.tsbuildinfo
 pnpm-debug.log*
