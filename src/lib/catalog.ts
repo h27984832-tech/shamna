@@ -1,4 +1,4 @@
-import type { Product } from './models'
+import type { MarketplaceStore, Product } from './models'
 import { supabase } from './supabase'
 
 export const demoProducts: Product[] = [
@@ -12,6 +12,14 @@ export const demoProducts: Product[] = [
   { id: 'demo-8', name: 'زيت زيتون بلدي', category: 'مونة', price: 95000, stockCount: 7, area: 'قطنا', store: 'خيرات الدار', storeId: 'demo-harvest', emoji: '🫒', color: 'olive', note: 'عبوة تجريبية', isDemo: true },
 ]
 
+export const demoStores: MarketplaceStore[] = [
+  { id: 'demo-harvest', name: 'خيرات الدار', description: 'مونة بلدية وخيرات موسمية من أهل المنطقة.', area: 'قطنا', productCount: 2, isDemo: true },
+  { id: 'demo-crafts', name: 'دار الحرف', description: 'قطع منزلية مصنوعة يدويًا بحكاية شامية.', area: 'قطنا', productCount: 1, isDemo: true },
+  { id: 'demo-thread', name: 'خيط وحكاية', description: 'تطريز وقطع قماشية بتفاصيل محلية.', area: 'جرمانا', productCount: 2, isDemo: true },
+  { id: 'demo-soap', name: 'بيت الصابون', description: 'عناية طبيعية مستوحاة من صناعة الصابون السوري.', area: 'جرمانا', productCount: 1, isDemo: true },
+  { id: 'demo-candles', name: 'ضو الشام', description: 'شموع بروائح دافئة مصنوعة يدويًا.', area: 'جرمانا', productCount: 1, isDemo: true },
+]
+
 type CatalogRow = {
   id: string
   name: string
@@ -23,6 +31,14 @@ type CatalogRow = {
   product_images: { storage_path: string; sort_order: number }[] | null
   categories: { name: string } | { name: string }[] | null
   stores: { name: string; description: string; cities: { name: string } | { name: string }[] | null }
+}
+
+type StoreRow = {
+  id: string
+  name: string
+  description: string
+  cities: { name: string } | { name: string }[] | null
+  products: { count: number }[]
 }
 
 const fallbackColor: Record<string, string> = {
@@ -68,6 +84,27 @@ export async function loadCatalog(): Promise<Product[]> {
       isDemo: false,
     }
   })
+}
+
+export async function loadStores(): Promise<MarketplaceStore[]> {
+  if (!supabase) return demoStores
+
+  const { data, error } = await supabase
+    .from('stores')
+    .select('id,name,description,cities(name),products(count)')
+    .eq('status', 'active')
+    .order('created_at', { ascending: false })
+
+  if (error) throw error
+
+  return ((data ?? []) as unknown as StoreRow[]).map((row) => ({
+    id: row.id,
+    name: row.name,
+    description: row.description,
+    area: Array.isArray(row.cities) ? row.cities[0]?.name ?? 'سوريا' : row.cities?.name ?? 'سوريا',
+    productCount: row.products?.[0]?.count ?? 0,
+    isDemo: false,
+  }))
 }
 
 export async function loadCategories(): Promise<string[]> {

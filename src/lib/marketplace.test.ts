@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { demoProducts } from './catalog'
-import { filterCatalog, summarizeCart } from './marketplace'
+import { filterCatalog, filterFavorites, summarizeCart, summarizeDelivery } from './marketplace'
 
 describe('filterCatalog', () => {
   it('filters demo products by category and area', () => {
@@ -33,5 +33,27 @@ describe('summarizeCart', () => {
 
   it('handles an empty cart', () => {
     expect(summarizeCart([])).toEqual({ itemCount: 0, subtotal: 0 })
+  })
+})
+
+describe('filterFavorites', () => {
+  it('returns only favorited products and keeps catalog order', () => {
+    const favorites = filterFavorites(demoProducts, ['demo-5', 'demo-2'])
+    expect(favorites.map((product) => product.id)).toEqual(['demo-2', 'demo-5'])
+  })
+})
+
+describe('summarizeDelivery', () => {
+  it('adds one delivery fee per distinct store', () => {
+    expect(summarizeDelivery(['store-a', 'store-a', 'store-b'], [
+      { store_id: 'store-a', fee_syp: 5000 },
+      { store_id: 'store-b', fee_syp: 7000 },
+    ])).toEqual({ supported: true, fee: 12000 })
+  })
+
+  it('marks the address unsupported when one store has no active zone', () => {
+    expect(summarizeDelivery(['store-a', 'store-b'], [
+      { store_id: 'store-a', fee_syp: 5000 },
+    ])).toEqual({ supported: false, fee: 0 })
   })
 })

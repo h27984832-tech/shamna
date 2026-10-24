@@ -24,3 +24,20 @@ export function summarizeCart(products: Product[]): { itemCount: number; subtota
     subtotal: summary.subtotal + product.price,
   }), { itemCount: 0, subtotal: 0 })
 }
+
+export function filterFavorites(products: Product[], favoriteIds: string[]): Product[] {
+  const saved = new Set(favoriteIds)
+  return products.filter((product) => saved.has(product.id))
+}
+
+export type DeliveryZoneFee = { store_id: string; fee_syp: number }
+
+export function summarizeDelivery(storeIds: string[], zones: DeliveryZoneFee[]): { supported: boolean; fee: number } {
+  const feesByStore = new Map(zones.map((zone) => [zone.store_id, Number(zone.fee_syp)]))
+  const uniqueStoreIds = [...new Set(storeIds)]
+  if (uniqueStoreIds.some((storeId) => !feesByStore.has(storeId))) return { supported: false, fee: 0 }
+  return {
+    supported: true,
+    fee: uniqueStoreIds.reduce((total, storeId) => total + (feesByStore.get(storeId) ?? 0), 0),
+  }
+}
