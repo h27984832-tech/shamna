@@ -1,10 +1,12 @@
 import { useState } from 'react'
 import type { FormEvent } from 'react'
 import { supabase } from '../lib/supabase'
+import { useAccessibleDialog } from '../hooks/useAccessibleDialog'
 
 type PasswordRecoveryDialogProps = { onClose: () => void }
 
 export function PasswordRecoveryDialog({ onClose }: PasswordRecoveryDialogProps) {
+  const dialogRef = useAccessibleDialog<HTMLElement>(onClose)
   const [password, setPassword] = useState('')
   const [confirmation, setConfirmation] = useState('')
   const [busy, setBusy] = useState(false)
@@ -46,7 +48,7 @@ export function PasswordRecoveryDialog({ onClose }: PasswordRecoveryDialogProps)
 
   return (
     <div className="overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
-      <section className="dialog auth-dialog" role="dialog" aria-modal="true" aria-labelledby="recovery-title">
+      <section ref={dialogRef} tabIndex={-1} className="dialog auth-dialog" role="dialog" aria-modal="true" aria-labelledby="recovery-title">
         <div className="dialog-heading">
           <div><span className="eyebrow">حساب شامنا</span><h2 id="recovery-title">تعيين كلمة مرور جديدة</h2></div>
           <button className="icon-button" type="button" onClick={onClose} aria-label="إغلاق">×</button>

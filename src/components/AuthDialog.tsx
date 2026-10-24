@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { FormEvent } from 'react'
 import { supabase } from '../lib/supabase'
+import { useAccessibleDialog } from '../hooks/useAccessibleDialog'
 
 type AuthDialogProps = { onClose: () => void; onAuthenticated: () => void }
 
@@ -30,6 +31,7 @@ function authErrorMessage(cause: unknown) {
 }
 
 export function AuthDialog({ onClose, onAuthenticated }: AuthDialogProps) {
+  const dialogRef = useAccessibleDialog<HTMLElement>(onClose)
   const [mode, setMode] = useState<'signin' | 'signup' | 'recover'>('signin')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -86,7 +88,7 @@ export function AuthDialog({ onClose, onAuthenticated }: AuthDialogProps) {
 
   return (
     <div className="overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
-      <section className="dialog auth-dialog" role="dialog" aria-modal="true" aria-labelledby="auth-title">
+      <section ref={dialogRef} tabIndex={-1} className="dialog auth-dialog" role="dialog" aria-modal="true" aria-labelledby="auth-title">
         <div className="dialog-heading">
           <div><span className="eyebrow">أهلاً فيك</span><h2 id="auth-title">{mode === 'signin' ? 'فوت على حسابك' : mode === 'signup' ? 'حساب جديد بشامنا' : 'استعادة كلمة المرور'}</h2></div>
           <button className="icon-button" onClick={onClose} aria-label="إغلاق">×</button>

@@ -5,6 +5,7 @@ import type { Product } from '../lib/models'
 import { summarizeDelivery } from '../lib/marketplace'
 import { userFacingError } from '../lib/user-facing-error'
 import { supabase } from '../lib/supabase'
+import { useAccessibleDialog } from '../hooks/useAccessibleDialog'
 
 type CheckoutDialogProps = {
   session: Session | null
@@ -20,6 +21,7 @@ type DeliveryQuote = { key: string; status: 'loading' | 'ready' | 'unsupported' 
 type DeliveryZone = { store_id: string; fee_syp: number }
 
 export function CheckoutDialog({ session, cart, onClose, onRequireAuth, onCompleted }: CheckoutDialogProps) {
+  const dialogRef = useAccessibleDialog<HTMLElement>(onClose)
   const [cities, setCities] = useState<CityOption[]>([])
   const [savedAddresses, setSavedAddresses] = useState<SavedAddress[]>([])
   const [addressId, setAddressId] = useState('new')
@@ -159,7 +161,7 @@ export function CheckoutDialog({ session, cart, onClose, onRequireAuth, onComple
 
   return (
     <div className="overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
-      <section className="dialog checkout-dialog" role="dialog" aria-modal="true" aria-labelledby="checkout-title">
+      <section ref={dialogRef} tabIndex={-1} className="dialog checkout-dialog" role="dialog" aria-modal="true" aria-labelledby="checkout-title">
         <div className="dialog-heading">
           <div><span className="eyebrow">الدفع عند الاستلام</span><h2 id="checkout-title">عنوان التوصيل</h2></div>
           <button className="icon-button" onClick={onClose} aria-label="إغلاق">×</button>

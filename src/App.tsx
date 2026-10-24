@@ -1,17 +1,23 @@
-import { useEffect, useMemo, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
+import { useAccessibleDialog } from './hooks/useAccessibleDialog'
 import type { MarketplaceStore, Product } from './lib/models'
 import { demoProducts, loadCatalog, loadCategories, loadCities, loadStores } from './lib/catalog'
 import { isSupabaseConfigured } from './lib/supabase'
 import { useAuth } from './hooks/useAuth'
-import { AccountCenter } from './components/AccountCenter'
-import { AuthDialog } from './components/AuthDialog'
-import { PasswordRecoveryDialog } from './components/PasswordRecoveryDialog'
-import { CheckoutDialog } from './components/CheckoutDialog'
 import { filterCatalog, filterFavorites, summarizeCart } from './lib/marketplace'
 import { userFacingError } from './lib/user-facing-error'
 
+const AccountCenter = lazy(() => import('./components/AccountCenter').then((module) => ({ default: module.AccountCenter })))
+const AuthDialog = lazy(() => import('./components/AuthDialog').then((module) => ({ default: module.AuthDialog })))
+const PasswordRecoveryDialog = lazy(() => import('./components/PasswordRecoveryDialog').then((module) => ({ default: module.PasswordRecoveryDialog })))
+const CheckoutDialog = lazy(() => import('./components/CheckoutDialog').then((module) => ({ default: module.CheckoutDialog })))
+
 const categoryIcons: Record<string, string> = { 'الكل': '✳', 'مونة': '🍯', 'منزل': '🏺', 'أزياء': '🧵', 'عناية': '🌱' }
 const formatPrice = (price: number) => new Intl.NumberFormat('ar-SY').format(price)
+
+function DialogLoading() {
+  return <div className="overlay" role="status" aria-live="polite"><div className="dialog-loading">عم نجهّز النافذة…</div></div>
+}
 
 function App() {
   const { session, roles, loading: authLoading, passwordRecovery, clearPasswordRecovery } = useAuth()
@@ -47,6 +53,8 @@ function App() {
   const [checkoutOpen, setCheckoutOpen] = useState(false)
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null)
   const [notice, setNotice] = useState('')
+  const cartDialogRef = useAccessibleDialog<HTMLElement>(() => setCartOpen(false), cartOpen)
+  const productDialogRef = useAccessibleDialog<HTMLElement>(() => setSelectedProduct(null), Boolean(selectedProduct))
 
   useEffect(() => { localStorage.setItem('shamna-cart', JSON.stringify(cart)) }, [cart])
   useEffect(() => { localStorage.setItem('shamna-favorites', JSON.stringify(favoriteIds)) }, [favoriteIds])
@@ -178,27 +186,27 @@ function App() {
 
       {notice && <div className="toast" role="status">✓ &nbsp;{notice}</div>}
 
-      {cartOpen && <div className="overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) setCartOpen(false) }}><aside className="cart-panel">
-        <div className="cart-head"><div><span className="eyebrow">سلتك المحلية</span><h2>طلباتك <i>({cart.length})</i></h2></div><button onClick={() => setCartOpen(false)} aria-label="إغلاق السلة">×</button></div>
+      {cartOpen && <div className="overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) setCartOpen(false) }}><aside ref={cartDialogRef} tabIndex={-1} className="cart-panel" role="dialog" aria-modal="true" aria-labelledby="cart-title">
+        <div className="cart-head"><div><span className="eyebrow">سلتك المحلية</span><h2 id="cart-title">طلباتك <i>({cart.length})</i></h2></div><button onClick={() => setCartOpen(false)} aria-label="إغلاق السلة">×</button></div>
         {cartProducts.length ? <><div className="cart-items">{cartProducts.map((product, index) => <div className="cart-row" key={`${product.id}-${index}`}><span className={`cart-thumb ${product.color}`}>{product.imageUrl ? <img src={product.imageUrl} alt="" /> : product.emoji}</span><div><b>{product.name}</b><small>{product.store} · {product.area}</small></div><strong>{formatPrice(product.price)} ل.س</strong><button className="remove-item" aria-label={`حذف ${product.name}`} onClick={() => setCart((items) => items.filter((_, itemIndex) => itemIndex !== index))}>×</button></div>)}</div><div className="cart-total"><span>المجموع قبل التوصيل</span><b>{formatPrice(total)} ل.س</b><small>تُراجع الأسعار والمخزون عند تأكيد الطلب، ويحسب رسم التوصيل حسب المنطقة والمتجر.</small></div><button className="checkout-button" onClick={() => { setCartOpen(false); setCheckoutOpen(true) }}>متابعة الطلب <span>←</span></button><button className="clear-cart" onClick={() => setCart([])}>إفراغ السلة</button></> : <div className="cart-empty"><span>♧</span><h3>سلتك لسا فاضية</h3><p>لما تلاقي شي حلو، ضيفه هون.</p><button onClick={() => setCartOpen(false)}>تصفّح المنتجات</button></div>}
       </aside></div>}
 
-      {selectedProduct && <div className="overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) setSelectedProduct(null) }}><section className="dialog product-dialog" role="dialog" aria-modal="true" aria-label={selectedProduct.name}>
+      {selectedProduct && <div className="overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) setSelectedProduct(null) }}><section ref={productDialogRef} tabIndex={-1} className="dialog product-dialog" role="dialog" aria-modal="true" aria-labelledby="product-dialog-title">
         <div className="dialog-heading"><span className="eyebrow">{selectedProduct.store} · {selectedProduct.area}</span><button className="icon-button" onClick={() => setSelectedProduct(null)} aria-label="إغلاق">×</button></div>
         <div className={`detail-visual ${selectedProduct.color}`}>{selectedProduct.imageUrl ? <img src={selectedProduct.imageUrl} alt={selectedProduct.name} /> : <span>{selectedProduct.emoji}</span>}</div>
-        <h2>{selectedProduct.name}</h2><p>{selectedProduct.description || selectedProduct.note}</p><strong className="detail-price">{formatPrice(selectedProduct.price)} ل.س</strong><button className="secondary-submit" aria-pressed={favoriteIds.includes(selectedProduct.id)} onClick={() => toggleFavorite(selectedProduct.id)}>{favoriteIds.includes(selectedProduct.id) ? 'إزالة من المحفوظات' : 'حفظ في المحفوظات على هذا الجهاز'}</button><button className="form-submit" onClick={() => { addToCart(selectedProduct); setSelectedProduct(null) }}>أضف إلى السلة</button>
+        <h2 id="product-dialog-title">{selectedProduct.name}</h2><p>{selectedProduct.description || selectedProduct.note}</p><strong className="detail-price">{formatPrice(selectedProduct.price)} ل.س</strong><button className="secondary-submit" aria-pressed={favoriteIds.includes(selectedProduct.id)} onClick={() => toggleFavorite(selectedProduct.id)}>{favoriteIds.includes(selectedProduct.id) ? 'إزالة من المحفوظات' : 'حفظ في المحفوظات على هذا الجهاز'}</button><button className="form-submit" onClick={() => { addToCart(selectedProduct); setSelectedProduct(null) }}>أضف إلى السلة</button>
       </section></div>}
 
-      {authOpen && <AuthDialog onClose={() => setAuthOpen(false)} onAuthenticated={() => { setAuthOpen(false); notify('تم تسجيل الدخول. افتح «حسابي» لمتابعة طلباتك وإعداداتك.') }} />}
-      {accountOpen && session && <AccountCenter session={session} roles={roles} onClose={() => setAccountOpen(false)} notify={notify} />}
-      {passwordRecovery && <PasswordRecoveryDialog onClose={clearPasswordRecovery} />}
-      {checkoutOpen && <CheckoutDialog
+      {authOpen && <Suspense fallback={<DialogLoading />}><AuthDialog onClose={() => setAuthOpen(false)} onAuthenticated={() => { setAuthOpen(false); notify('تم تسجيل الدخول. افتح «حسابي» لمتابعة طلباتك وإعداداتك.') }} /></Suspense>}
+      {accountOpen && session && <Suspense fallback={<DialogLoading />}><AccountCenter session={session} roles={roles} onClose={() => setAccountOpen(false)} notify={notify} /></Suspense>}
+      {passwordRecovery && <Suspense fallback={<DialogLoading />}><PasswordRecoveryDialog onClose={clearPasswordRecovery} /></Suspense>}
+      {checkoutOpen && <Suspense fallback={<DialogLoading />}><CheckoutDialog
         session={session}
         cart={cartProducts}
         onClose={() => setCheckoutOpen(false)}
         onRequireAuth={() => { setCheckoutOpen(false); setAuthOpen(true) }}
         onCompleted={() => { setCart([]); setCheckoutOpen(false); notify('تم تسجيل طلبك، وسيظهر في حسابك بعد تأكيد المتجر.') }}
-      />}
+      /></Suspense>}
     </>
   )
 }

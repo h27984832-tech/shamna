@@ -15,7 +15,7 @@ describe('userFacingError', () => {
   it('does not leak row-level security or SQL details', () => {
     const message = userFacingError({ code: '42501', message: 'permission denied for table private_records' }, 'تعذر حفظ البيانات.')
     expect(message).toContain('لا تسمح صلاحية هذا الحساب')
-    expect(message).not.toContain('private_records')
+    expect(message.includes('private_records')).toBe(false)
   })
 
   it('asks users to wait after a rate limit without retrying', () => {
@@ -26,6 +26,6 @@ describe('userFacingError', () => {
   it('uses a safe fallback for unrecognized backend errors', () => {
     const message = userFacingError({ code: 'XX000', message: 'internal server detail' }, 'تعذر حفظ البيانات.')
     expect(message).toBe('تعذر حفظ البيانات.')
-    expect(message).not.toContain('internal server detail')
+    expect(message.includes('internal server detail')).toBe(false)
   })
 })

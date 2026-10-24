@@ -4,6 +4,7 @@ import type { AuthSession as Session } from '@supabase/supabase-js'
 import type { AppRole, MarketplaceOrderStatus, StoreStatus } from '../lib/models'
 import { userFacingError } from '../lib/user-facing-error'
 import { supabase } from '../lib/supabase'
+import { useAccessibleDialog } from '../hooks/useAccessibleDialog'
 
 type AccountCenterProps = {
   session: Session
@@ -25,8 +26,19 @@ type OwnedProduct = {
   is_active: boolean
 }
 type SellerOrder = { id: string; status: MarketplaceOrderStatus; total_syp: number; created_at: string; order_items?: { product_name_snapshot: string; quantity: number }[] }
-type CustomerOrder = { id: string; status: MarketplaceOrderStatus; total_syp: number; created_at: string }
 type Relation<T> = T | T[] | null
+type OrderStatusEvent = { id: string; old_status: MarketplaceOrderStatus | null; new_status: MarketplaceOrderStatus; created_at: string }
+type CustomerStoreOrder = {
+  id: string
+  status: MarketplaceOrderStatus
+  subtotal_syp: number
+  delivery_fee_syp: number
+  total_syp: number
+  stores?: Relation<{ name: string }>
+  order_items?: { product_name_snapshot: string; quantity: number; unit_price_syp: number; line_total_syp: number }[]
+  order_status_history?: OrderStatusEvent[]
+}
+type CustomerOrder = { id: string; status: MarketplaceOrderStatus; total_syp: number; created_at: string; store_orders?: CustomerStoreOrder[] }
 type PendingStore = { id: string; name: string; owner_id: string; city_id: string; cities?: Relation<{ name: string }> }
 type AdminProduct = { id: string; name: string; price_syp: number; stock_count: number; is_active: boolean; stores?: Relation<{ name: string }> }
 type AdminOrder = { id: string; status: MarketplaceOrderStatus; total_syp: number; created_at: string; store_orders?: { id: string; status: MarketplaceOrderStatus; stores?: Relation<{ name: string }> }[] }
@@ -49,8 +61,10 @@ const transitions: Partial<Record<MarketplaceOrderStatus, MarketplaceOrderStatus
 }
 
 const formatPrice = (value: number) => `${new Intl.NumberFormat('ar-SY').format(value)} ل.س`
+const formatDateTime = (value: string) => new Intl.DateTimeFormat('ar-SY', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value))
 
 export function AccountCenter({ session, roles, onClose, notify }: AccountCenterProps) {
+  const dialogRef = useAccessibleDialog<HTMLElement>(onClose)
   const [store, setStore] = useState<Store | null>(null)
   const [cities, setCities] = useState<City[]>([])
   const [categories, setCategories] = useState<Category[]>([])
@@ -91,7 +105,7 @@ export function AccountCenter({ session, roles, onClose, notify }: AccountCenter
       supabase.from('cities').select('id,name,is_active').order('name'),
       supabase.from('categories').select('id,name,is_active').order('sort_order'),
       supabase.from('profiles').select('display_name,phone').eq('id', session.user.id).maybeSingle(),
-      supabase.from('orders').select('id,status,total_syp,created_at').eq('customer_id', session.user.id).order('created_at', { ascending: false }).limit(20),
+      supabase.from('orders').select('id,status,total_syp,created_at,store_orders(id,status,subtotal_syp,delivery_fee_syp,total_syp,stores(name),order_items(product_name_snapshot,quantity,unit_price_syp,line_total_syp),order_status_history(id,old_status,new_status,created_at))').eq('customer_id', session.user.id).order('created_at', { ascending: false }).limit(20),
     ])
 
     if (storeResult.error && storeResult.error.code !== 'PGRST116') setError(userFacingError(storeResult.error, 'تعذر تحميل بيانات المتجر.'))
@@ -104,6 +118,7 @@ export function AccountCenter({ session, roles, onClose, notify }: AccountCenter
     setCategories(isAdmin ? allCategories : allCategories.filter((item) => item.is_active))
     setDisplayName(profileResult.data?.display_name ?? '')
     setPhone(profileResult.data?.phone ?? '')
+    if (customerOrdersResult.error) setError(userFacingError(customerOrdersResult.error, 'تعذر تحميل سجل طلباتك.'))
     setCustomerOrders((customerOrdersResult.data ?? []) as CustomerOrder[])
     if (!cityId && availableCities.length) setCityId(availableCities[0].id)
     if (!zoneCity && availableCities.length) setZoneCity(availableCities[0].id)
@@ -371,7 +386,7 @@ export function AccountCenter({ session, roles, onClose, notify }: AccountCenter
 
   return (
     <div className="overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
-      <section className="dialog account-dialog" role="dialog" aria-modal="true" aria-labelledby="account-title">
+      <section ref={dialogRef} tabIndex={-1} className="dialog account-dialog" role="dialog" aria-modal="true" aria-labelledby="account-title">
         <div className="dialog-heading">
           <div><span className="eyebrow">حساب شامنا</span><h2 id="account-title">أهلاً {displayName || session.user.email}</h2></div>
           <button className="icon-button" onClick={onClose} aria-label="إغلاق">×</button>
@@ -470,7 +485,31 @@ export function AccountCenter({ session, roles, onClose, notify }: AccountCenter
             </div>) : <p className="muted-copy">لا توجد تغييرات مسجلة حتى الآن.</p>}
           </section>}
 
-          <section className="account-section"><h3>طلباتي</h3>{customerOrders.length ? customerOrders.map((order) => <div className="managed-row" key={order.id}><span>{statusLabels[order.status]}<small>رقم الطلب {order.id.slice(0, 8)}…</small></span><b>{formatPrice(order.total_syp)}</b></div>) : <p className="muted-copy">لا توجد طلبات بعد.</p>}</section>
+          <section className="account-section customer-orders-section">
+            <h3>طلباتي</h3>
+            {customerOrders.length ? customerOrders.map((order) => <article className="customer-order" key={order.id}>
+              <div className="customer-order-summary">
+                <span><b>{statusLabels[order.status]}</b><small>طلب رقم {order.id.slice(0, 8)}… · {formatDateTime(order.created_at)}</small></span>
+                <strong>{formatPrice(order.total_syp)}</strong>
+              </div>
+              <details className="customer-order-details">
+                <summary>تفاصيل الطلب وتتبع الحالة</summary>
+                <div className="customer-order-stores">
+                  {(order.store_orders ?? []).map((storeOrder) => {
+                    const events = [...(storeOrder.order_status_history ?? [])].sort((left, right) => left.created_at.localeCompare(right.created_at))
+                    return <section className="customer-store-order" key={storeOrder.id}>
+                      <div className="customer-store-heading"><b>{relatedRecord(storeOrder.stores)?.name ?? 'متجر'}</b><span>{statusLabels[storeOrder.status]}</span></div>
+                      <ul className="customer-order-items">{(storeOrder.order_items ?? []).map((item, index) => <li key={`${storeOrder.id}-${index}`}><span>{item.product_name_snapshot} × {item.quantity}</span><b>{formatPrice(item.line_total_syp)}</b></li>)}</ul>
+                      <div className="customer-order-costs"><span>المجموع الفرعي <b>{formatPrice(storeOrder.subtotal_syp)}</b></span><span>التوصيل <b>{formatPrice(storeOrder.delivery_fee_syp)}</b></span></div>
+                      <h4>سجل الحالة</h4>
+                      {events.length ? <ol className="order-timeline">{events.map((event) => <li key={event.id}><span className="timeline-dot" /><div><b>{statusLabels[event.new_status]}</b><time dateTime={event.created_at}>{formatDateTime(event.created_at)}</time></div></li>)}</ol> : <p className="muted-copy">لا يوجد تحديث حالة إضافي لهذا المتجر بعد.</p>}
+                    </section>
+                  })}
+                  {!order.store_orders?.length && <p className="muted-copy">تفاصيل المتاجر لهذا الطلب غير متاحة حاليًا.</p>}
+                </div>
+              </details>
+            </article>) : <p className="muted-copy">لا توجد طلبات بعد.</p>}
+          </section>
         </div>
         {error && <p className="form-error" role="alert">{error}</p>}
         <button className="signout-button" onClick={() => void signOut()}>تسجيل الخروج</button>
