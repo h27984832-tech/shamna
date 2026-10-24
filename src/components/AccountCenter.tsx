@@ -43,6 +43,7 @@ type PendingStore = { id: string; name: string; owner_id: string; city_id: strin
 type AdminProduct = { id: string; name: string; price_syp: number; stock_count: number; is_active: boolean; stores?: Relation<{ name: string }> }
 type AdminOrder = { id: string; status: MarketplaceOrderStatus; total_syp: number; created_at: string; store_orders?: { id: string; status: MarketplaceOrderStatus; stores?: Relation<{ name: string }> }[] }
 type AuditEvent = { id: string; action: 'INSERT' | 'UPDATE' | 'DELETE'; entity_table: string; entity_id: string | null; created_at: string }
+type AdminStats = { activeStores: number; pendingStores: number; activeProducts: number; totalOrders: number; openOrders: number }
 
 function relatedRecord<T>(relation: Relation<T> | undefined): T | undefined {
   return Array.isArray(relation) ? relation[0] : relation ?? undefined
@@ -75,6 +76,9 @@ export function AccountCenter({ session, roles, onClose, notify }: AccountCenter
   const [adminProducts, setAdminProducts] = useState<AdminProduct[]>([])
   const [adminOrders, setAdminOrders] = useState<AdminOrder[]>([])
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([])
+  const [adminStats, setAdminStats] = useState<AdminStats | null>(null)
+  const [adminStatsLoading, setAdminStatsLoading] = useState(false)
+  const [adminStatsError, setAdminStatsError] = useState('')
   const [displayName, setDisplayName] = useState('')
   const [phone, setPhone] = useState('')
   const [storeName, setStoreName] = useState('')
@@ -135,16 +139,40 @@ export function AccountCenter({ session, roles, onClose, notify }: AccountCenter
     }
 
     if (isAdmin) {
-      const [pendingResult, productsResult, ordersResult, auditResult] = await Promise.all([
+      setAdminStatsLoading(true)
+      setAdminStatsError('')
+      const [pendingResult, productsResult, ordersResult, auditResult, activeStoresCount, pendingStoresCount, activeProductsCount, totalOrdersCount, openOrdersCount] = await Promise.all([
         supabase.from('stores').select('id,name,owner_id,city_id,cities(name)').eq('status', 'pending').order('created_at'),
         supabase.from('products').select('id,name,price_syp,stock_count,is_active,stores(name)').order('created_at', { ascending: false }).limit(100),
         supabase.from('orders').select('id,status,total_syp,created_at,store_orders(id,status,stores(name))').order('created_at', { ascending: false }).limit(100),
         supabase.from('admin_audit_log').select('id,action,entity_table,entity_id,created_at').order('created_at', { ascending: false }).limit(30),
+        supabase.from('stores').select('id', { count: 'exact', head: true }).eq('status', 'active'),
+        supabase.from('stores').select('id', { count: 'exact', head: true }).eq('status', 'pending'),
+        supabase.from('products').select('id', { count: 'exact', head: true }).eq('is_active', true),
+        supabase.from('orders').select('id', { count: 'exact', head: true }),
+        supabase.from('orders').select('id', { count: 'exact', head: true }).in('status', ['new', 'confirmed', 'preparing', 'out_for_delivery']),
       ])
       if (pendingResult.error) setError(userFacingError(pendingResult.error, 'تعذر تحميل طلبات المتاجر.'))
       if (productsResult.error) setError(userFacingError(productsResult.error, 'تعذر تحميل المنتجات.'))
       if (ordersResult.error) setError(userFacingError(ordersResult.error, 'تعذر تحميل الطلبات.'))
       if (auditResult.error) setError('تعذر تحميل سجل التدقيق. تحقق من سياسة قراءة سجل الإدارة.')
+      const statsResults = [activeStoresCount, pendingStoresCount, activeProductsCount, totalOrdersCount, openOrdersCount]
+      const statsError = statsResults.find((result) => result.error)?.error
+      if (statsError) {
+        setAdminStats(null)
+        setAdminStatsError(userFacingError(statsError, 'تعذر تحميل إحصاءات المنصة.'))
+        setError(userFacingError(statsError, 'تعذر تحميل إحصاءات المنصة.'))
+      } else {
+        setAdminStatsError('')
+        setAdminStats({
+          activeStores: activeStoresCount.count ?? 0,
+          pendingStores: pendingStoresCount.count ?? 0,
+          activeProducts: activeProductsCount.count ?? 0,
+          totalOrders: totalOrdersCount.count ?? 0,
+          openOrders: openOrdersCount.count ?? 0,
+        })
+      }
+      setAdminStatsLoading(false)
       setPendingStores((pendingResult.data ?? []) as PendingStore[])
       setAdminProducts((productsResult.data ?? []) as AdminProduct[])
       setAdminOrders((ordersResult.data ?? []) as AdminOrder[])
@@ -444,6 +472,17 @@ export function AccountCenter({ session, roles, onClose, notify }: AccountCenter
             </section>
             <section className="account-section"><h3>طلبات متجرك</h3>{sellerOrders.length ? sellerOrders.map((order) => <div className="managed-row order-row" key={order.id}><span>{statusLabels[order.status]}<small>{(order.order_items ?? []).map((item) => `${item.product_name_snapshot} × ${item.quantity}`).join('، ')}</small></span><b>{formatPrice(order.total_syp)}</b><div className="status-actions">{(transitions[order.status] ?? []).map((next) => <button className="text-button" key={next} disabled={busy} onClick={() => changeOrderStatus(order.id, next)}>{statusLabels[next]}</button>)}</div></div>) : <p className="muted-copy">لا توجد طلبات لهذا المتجر حالياً.</p>}</section>
           </>}
+
+          {isAdmin && <section className="account-section" aria-busy={adminStatsLoading}>
+            <h3>مؤشرات المنصة</h3>
+            {adminStats ? <dl className="admin-stats" aria-label="إحصاءات المنصة">
+              <div><dt>متاجر نشطة</dt><dd>{new Intl.NumberFormat('ar-SY').format(adminStats.activeStores)}</dd></div>
+              <div><dt>طلبات متاجر معلّقة</dt><dd>{new Intl.NumberFormat('ar-SY').format(adminStats.pendingStores)}</dd></div>
+              <div><dt>منتجات نشطة</dt><dd>{new Intl.NumberFormat('ar-SY').format(adminStats.activeProducts)}</dd></div>
+              <div><dt>كل الطلبات</dt><dd>{new Intl.NumberFormat('ar-SY').format(adminStats.totalOrders)}</dd></div>
+              <div><dt>طلبات قيد التنفيذ</dt><dd>{new Intl.NumberFormat('ar-SY').format(adminStats.openOrders)}</dd></div>
+            </dl> : <p className="muted-copy" role={adminStatsError ? 'alert' : 'status'}>{adminStatsError || (adminStatsLoading ? 'عم نحمّل إحصاءات المنصة…' : 'الإحصاءات غير متاحة حالياً.')}</p>}
+          </section>}
 
           {isAdmin && <section className="account-section">
             <h3>طلبات تفعيل المتاجر ({pendingStores.length})</h3>
